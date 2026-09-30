@@ -25,7 +25,13 @@ Bool runFuzzMode(String[] args) {
         hi = hi + 1
     }
     if (fuzzInUrl == false && fuzzInBody == false && fuzzInHeader == false) {
-        log.error("koffuster fuzz: FUZZ não encontrado em -u/-H/--body - nada para substituir (veja: koffuster help fuzz)")
+        log.error("koffuster fuzz: nenhum FUZZ na linha de comando - nada para substituir.")
+        log.error("Coloque FUZZ onde o payload deve entrar. Exemplos:")
+        log.error("  koffuster fuzz \"alvo.com/busca?q=FUZZ\" payloads.txt")
+        log.error("  koffuster fuzz alvo.com/FUZZ payloads.txt")
+        log.error("  koffuster fuzz alvo.com/api payloads.txt -X POST --body \"user=FUZZ\"")
+        log.error("  koffuster fuzz alvo.com payloads.txt -H \"X-Token: FUZZ\"")
+        log.error("(veja também: koffuster help fuzz)")
         process.exit(2)
         return false
     }
