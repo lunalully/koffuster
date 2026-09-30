@@ -1,24 +1,8 @@
-// httpx.kf - the network layer's shared error classification.
-//
-// The actual request calls live in sched.kf's per-slot zero-arg functions
-// (see that file's header comment for why: spawn cannot take a dynamic
-// argument on this build, so slot wrapper functions read their target URL
-// from a temp file instead of a parameter). This file holds the one piece
-// of logic every one of those slots' `catch` blocks shares: turning the
-// caught exception String into a short, stable reason code. Per cookbook
-// P1c, the caught String is the Java exception's toString() with no extra
-// Kof wrapping, so classification is done with .contains(...).
+// httpx.kf - helpers compartilhados de HTTP.
 
-String classifyHttpErr(String e) {
-    if (e.contains("ConnectException")) { return "refused" }
-    if (e.contains("HttpTimeoutException")) { return "timeout" }
-    if (e.contains("UnknownHostException")) { return "dns_error" }
-    return "error"
-}
-
-// Builds the single packed header string every request uses. MUST stay a
-// single "K: V\r\nK2: V2" string - passing headers as separate vararg
-// arguments crashes the compiler (cookbook P1e).
+// Constrói a string de headers empacotada que todo request usa. O runtime
+// KOF 0.5.0 faz split por linha e procura ':' - uma única string
+// "K: V\r\nK2: V2" é o formato suportado.
 String buildHeaders(String userAgent, List<String> extraHeaders, String cookie, String authHeader) {
     var h = "User-Agent: " + userAgent
     var i = 0

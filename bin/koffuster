@@ -1,32 +1,20 @@
 #!/usr/bin/env bash
-# bin/koffuster — launcher for the Koffuster terminal enumeration tool.
+# bin/koffuster — launcher para a ferramenta de enumeração Koffuster.
 #
-# Responsibilities (architecture.md section 1):
-#   - resolve its own real location so it works when invoked via a symlink
-#     or from any working directory;
-#   - locate the installed src/ module (all .kf files, one main()) and a
-#     KOF runtime to run it with;
-#   - export the two JVM env vars every Koffuster run needs
-#     (JDK_JAVAC_OPTIONS for --enable-preview, JDK_JAVA_OPTIONS for
-#     --enable-preview plus the vhost Host-header override flag);
-#   - point KOFFUSTER_BANNER at the installed banner.txt so it displays
-#     correctly even when Koffuster is invoked from a different directory
-#     (see output.kf's bannerText — a bare relative "banner.txt" only
-#     resolves when the caller happens to be sitting in the project root);
-#   - map --proxy to the JVM http(s).proxyHost/proxyPort system properties,
-#     if given;
-#   - exec the runtime on the module, forwarding every argument untouched.
-#
-# This script does not itself change directory or otherwise alter how
-# relative paths in the user's own arguments (wordlist, -o output file)
-# resolve — those are read/written by the KOF program using the caller's
-# own working directory, exactly as required.
+# Responsabilidades:
+#   - resolver seu próprio caminho real (funciona via symlink ou de qualquer
+#     diretório de trabalho);
+#   - localizar o módulo src/ (todos os .kf, um único main()) e um runtime
+#     KOF para executá-lo;
+#   - exportar a flag JVM que o modo vhost precisa
+#     (-Djdk.httpclient.allowRestrictedHeaders=host, obrigatória para
+#     sobrescrever o header Host);
+#   - apontar KOFFUSTER_BANNER para o banner.txt instalado;
+#   - mapear --proxy para as propriedades http(s).proxyHost/proxyPort da JVM;
+#   - exec o runtime no módulo, repassando os argumentos sem alteração.
 
 set -euo pipefail
 
-# Resolve this script's real path even through a symlink, so INSTALL_ROOT
-# is correct regardless of how "koffuster" was invoked (PATH lookup,
-# relative path, symlink from /usr/local/bin, etc).
 resolve_self() {
     local src="${BASH_SOURCE[0]}"
     while [ -h "$src" ]; do
@@ -53,29 +41,23 @@ if [ ! -f "$MAIN_FILE" ]; then
     exit 1
 fi
 
-# The two JVM env vars every Koffuster run needs. java/javac pick these up
-# from the environment automatically (JDK_JAVA_OPTIONS / JDK_JAVAC_OPTIONS),
-# so no per-invocation flag plumbing is needed here. Merge with anything
-# the caller already had set, rather than clobbering it.
-export JDK_JAVAC_OPTIONS="--enable-preview --release 21 ${JDK_JAVAC_OPTIONS:-}"
-JAVA_OPTS="--enable-preview -Djdk.httpclient.allowRestrictedHeaders=host ${JDK_JAVA_OPTIONS:-}"
+# Só a flag do vhost: o KOF 0.5.0 roda sem --enable-preview (o CLI usa a
+# JVM embutida da distribuição).
+export JDK_JAVA_OPTIONS="-Djdk.httpclient.allowRestrictedHeaders=host ${JDK_JAVA_OPTIONS:-}"
+export KOFFUSTER_BANNER="$BANNER_FILE"
 
-# --proxy <url> -> http(s).proxyHost/proxyPort JVM system properties
-# (architecture.md section 7). This is a lightweight scan of argv just for
-# --proxy; it does not consume or alter what actually gets forwarded to the
-# KOF program below.
+# --proxy <url> -> propriedades http(s).proxyHost/proxyPort da JVM.
 for ((i = 1; i <= $#; i++)); do
     arg="${!i}"
     if [ "$arg" = "--proxy" ]; then
         next=$((i + 1))
         proxy_url="${!next:-}"
         if [ -n "$proxy_url" ]; then
-            # strip scheme://
             hostport="${proxy_url#*://}"
             phost="${hostport%%:*}"
             pport="${hostport##*:}"
             if [ -n "$phost" ] && [ -n "$pport" ] && [ "$pport" != "$hostport" ]; then
-                JAVA_OPTS="$JAVA_OPTS -Dhttp.proxyHost=$phost -Dhttp.proxyPort=$pport -Dhttps.proxyHost=$phost -Dhttps.proxyPort=$pport"
+                export JDK_JAVA_OPTIONS="$JDK_JAVA_OPTIONS -Dhttp.proxyHost=$phost -Dhttp.proxyPort=$pport -Dhttps.proxyHost=$phost -Dhttps.proxyPort=$pport"
             fi
         fi
     elif [[ "$arg" == --proxy=* ]]; then
@@ -84,23 +66,14 @@ for ((i = 1; i <= $#; i++)); do
         phost="${hostport%%:*}"
         pport="${hostport##*:}"
         if [ -n "$phost" ] && [ -n "$pport" ] && [ "$pport" != "$hostport" ]; then
-            JAVA_OPTS="$JAVA_OPTS -Dhttp.proxyHost=$phost -Dhttp.proxyPort=$pport -Dhttps.proxyHost=$phost -Dhttps.proxyPort=$pport"
+            export JDK_JAVA_OPTIONS="$JDK_JAVA_OPTIONS -Dhttp.proxyHost=$phost -Dhttp.proxyPort=$pport -Dhttps.proxyHost=$phost -Dhttps.proxyPort=$pport"
         fi
     fi
 done
-export JDK_JAVA_OPTIONS="$JAVA_OPTS"
-export KOFFUSTER_BANNER="$BANNER_FILE"
 
-# Prefer a real `kof` command / KOF_HOME install on the user's own machine;
-# fall back to a staged jar for cloud/dev testing via
-# KOFFUSTER_KOF_JAR (set by the test harness in this repo's environment,
-# where no system-wide `kof` command is installed).
-# Stderr clean-up, applied to the child's stderr only (stdout is untouched):
-#   - drop the JVM's "Picked up JDK_JAVA_OPTIONS / JAVA_TOOL_OPTIONS" notices;
-#   - strip the leading "YYYY-MM-DD HH:MM:SS.mmm LEVEL " prefix that the
-#     runtime's log.error (the only stderr writer on this build) adds to each
-#     line, so the banner, progress and summary read cleanly.
-# SIGINT is ignored by the filter so Ctrl+C reaches (and only kills) the JVM.
+# Limpa o stderr do filho: remove os avisos "Picked up JDK_JAVA_OPTIONS"
+# da JVM e o prefixo timestamp+nível que o log.error do runtime adiciona.
+# O stdout nunca é tocado.
 exec 2> >(trap '' INT; exec sed -u -E -e '/^(NOTE: )?Picked up (JDK_JAVA_OPTIONS|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS):/d' -e 's/^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}([.,][0-9]+)? [A-Z]+ //' >&2)
 
 if [ -n "${KOFFUSTER_KOF_JAR:-}" ]; then

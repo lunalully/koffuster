@@ -1,4 +1,4 @@
-// modes_dir.kf - the `dir` mode driver.
+// modes_dir.kf - o driver do modo `dir`.
 
 import kof.process
 
@@ -16,92 +16,53 @@ Bool runDirMode(String[] args) {
     }
 
     var noColorEnv = envIsSet("NO_COLOR")
-    var colorOn = colorsEnabled(cfg.color(), cfg.noColor(), cfg.quiet(), cfg.format(), noColorEnv)
+    var colorOn = colorsEnabled(cfg.color(), false, cfg.quiet(), cfg.format(), noColorEnv)
 
-    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    printBanner(cfg.quiet(), false, cfg.format())
     if (cfg.verbose()) {
         log.error(configEcho(cfg))
     }
 
-    // -- assemble the shared header string used by body-length probes ----
-    // (http.status cannot carry headers at all on this build - see
-    // sched.kf's note - so this only ever reaches the body-length pass.)
     var authHeader = ""
     if (cfg.auth().length() > 0) {
         authHeader = "Basic " + base64Encode(cfg.auth())
     }
     var hdrs = buildHeaders(cfg.userAgent(), cfg.headers(), cfg.cookie(), authHeader)
-    writeHeadersFile(hdrs)
-    // Headerless mode: no -H/--cookie/--auth given. The ONE-argument
-    // http.get(url) never throws on any status (cookbook P1a) - only the
-    // two-argument, header-bearing form throws on non-2xx (impl-notes.md)
-    // - so when there is nothing custom to send, every candidate (not just
-    // ones needed for a filter decision) gets a real body length, 2xx or
-    // not, via runBodyLenBatchNoHdr instead of runBodyLenBatch.
-    var headerless = cfg.headers().size() == 0 && cfg.cookie().length() == 0 && cfg.auth().length() == 0
+    var useHeaders = cfg.headers().size() > 0 || cfg.cookie().length() > 0 || cfg.auth().length() > 0
 
     http.timeout(cfg.timeoutSec())
-
     var startMs = time.now()
 
-    // -- wordlist + candidate URLs ----------------------------------------
     var rawWords = loadWordlist(cfg.wordlist())
     var exts = parseExtensions(cfg.extensions())
     var words = expandExtensions(rawWords, exts)
 
     if (cfg.quiet() == false) {
-        log.error("koffuster dir: " + words.size() + " candidates, target " + redactUrl(cfg.url()))
+        log.error("koffuster dir: " + words.size() + " candidatos, alvo " + redactUrl(cfg.url()))
     }
 
-    // -- control probes / soft-404 baseline --------------------------------
     var needLength = cfg.excludeLength().length() > 0
     var baseline = buildBaseline(cfg.url(), true)
 
     var width = snapThreads(cfg.threads())
     if (cfg.verbose()) {
-        log.error("koffuster dir: threads snapped to " + width + " (requested " + cfg.threads() + ")")
+        log.error("koffuster dir: threads=" + width)
         if (baseline.softDetected()) {
-            log.error("koffuster dir: soft-404 baseline status=" + baseline.status() + " length=" + baseline.length())
+            log.error("koffuster dir: baseline soft-404 status=" + baseline.status() + " length=" + baseline.length())
         } else {
-            log.error("koffuster dir: no consistent soft-404 baseline detected")
+            log.error("koffuster dir: nenhum baseline soft-404 consistente")
         }
     }
 
     var totalOps = 2
     var foundCount = 0
     var errorCount = 0
-    var lastOpMs = time.now()
 
     var total = words.size()
     var idx = 0
     while (idx < total) {
         var count = width
         if (idx + count > total) { count = total - idx }
-
-        // Global --rate pacing: a single shared gate covering every
-        // operation (control probes above, retries, and this batch's
-        // requests alike). Approximated at the batch level: sleep so
-        // batches are spaced by roughly count/rate seconds. --delay is a
-        // different, additional per-batch pause (there are no persistent
-        // "worker" threads across batches on this build to apply a true
-        // per-worker delay to, so --delay is applied once per batch here,
-        // documented as an approximation in the requirements matrix).
-        if (cfg.rate() > 0) {
-            var minGapMs = (count * 1000) / cfg.rate()
-            var elapsed = time.now() - lastOpMs
-            if (elapsed < minGapMs) {
-                // time.sleep wants an Int; elapsed/minGapMs math involves
-                // time.now()'s Long, and Long.toInt() crashes codegen on
-                // this build, so round-trip through String (proven safe -
-                // docs/impl-notes.md) to get an Int sleep argument.
-                var gapStr = "" + (minGapMs - elapsed)
-                time.sleep(gapStr.toInt())
-            }
-        }
-        if (cfg.delayMs() > 0) {
-            time.sleep(cfg.delayMs())
-        }
-        lastOpMs = time.now()
 
         var batchUrls = listOf<String>()
         var j = 0
@@ -110,65 +71,44 @@ Bool runDirMode(String[] args) {
             j = j + 1
         }
 
-        var statusResults = runStatusBatch(width, batchUrls, count)
-        totalOps = totalOps + count
-
-        // Figure out which candidates in this batch need a body-length
-        // probe: only ones whose status matches the soft-404 baseline (to
-        // confirm/refute it) or, if --exclude-length is set, any
-        // surviving (non-404-by-default, non-explicitly-excluded) status -
-        // never every candidate, per architecture.md section 7's
-        // "minimize requests" rule.
-        var lenNeededUrls = listOf<String>()
-        var lenNeededIdx = listOf<String>()
-        var k = 0
-        while (k < count) {
-            var raw = statusResults.get(k)
-            if (raw.startsWith("ERR:") == false) {
-                var st = raw.toInt()
-                var wantsLen = false
-                if (headerless) {
-                    // Free and safe for any status on this path - show
-                    // real sizes everywhere, per the shared refinement.
-                    wantsLen = true
-                }
-                if (baseline.softDetected() && st == baseline.status()) { wantsLen = true }
-                if (needLength && st != 404) { wantsLen = true }
-                if (wantsLen) {
-                    lenNeededUrls.add(batchUrls.get(k))
-                    lenNeededIdx.add("" + k)
-                }
-            }
-            k = k + 1
+        var statusResults = listOf<String>()
+        if (useHeaders) {
+            // Com headers custom, o status exato só sai para 5xx (via
+            // exceção do runtime); o corpo (2xx-4xx) vem do http.get. A
+            // classificação fica: status real se 5xx, senão length.
+            statusResults = runBodyBatch(width, batchUrls, hdrs, true, count)
+            totalOps = totalOps + count
+        } else {
+            statusResults = runStatusBatch(width, batchUrls, count)
+            totalOps = totalOps + count
         }
 
-        var lengths = listOf<String>()
-        if (lenNeededUrls.size() > 0) {
-            var lenWidth = widthForCount(lenNeededUrls.size())
-            if (headerless) {
-                lengths = runBodyLenBatchNoHdr(lenWidth, lenNeededUrls, lenNeededUrls.size())
-            } else {
-                lengths = runBodyLenBatch(lenWidth, lenNeededUrls, lenNeededUrls.size())
-            }
-            totalOps = totalOps + lenNeededUrls.size()
-        }
-
-        // Merge status + (optional) length results and apply filters/retries.
+        // Com headers: os resultados são corpos (ou ERR:http<code>).
+        // Sem headers: são status numéricos, e o length é buscado para os
+        // que passarem no filtro de status quando preciso.
         var m = 0
         while (m < count) {
             var raw = statusResults.get(m)
             var url = batchUrls.get(m)
 
             if (raw.startsWith("ERR:")) {
-                var reason = raw.substring(4)
-                if ((reason == "refused" || reason == "timeout") && cfg.retries() > 0) {
+                var err = raw.substring(4)
+                if (err.startsWith("http")) {
+                    // 5xx real - não é achado, é erro operacional do alvo.
+                    errorCount = errorCount + 1
+                    if (cfg.verbose()) {
+                        log.error("erro: " + redactUrl(url) + " -> HTTP " + err.substring(4))
+                    }
+                } else if (isRetryable("ERR:" + err) && cfg.retries() > 0) {
                     var retried = statusWithRetries(url, cfg.retries())
                     if (retried.startsWith("ERR:") == false) {
                         raw = retried
+                        m = m + 1
+                        continue
                     } else {
                         errorCount = errorCount + 1
                         if (cfg.verbose()) {
-                            log.error("error: " + redactUrl(url) + " -> " + retried.substring(4))
+                            log.error("erro: " + redactUrl(url) + " -> " + retried.substring(4))
                         }
                         m = m + 1
                         continue
@@ -176,35 +116,54 @@ Bool runDirMode(String[] args) {
                 } else {
                     errorCount = errorCount + 1
                     if (cfg.verbose()) {
-                        log.error("error: " + redactUrl(url) + " -> " + reason)
+                        log.error("erro: " + redactUrl(url) + " -> " + err)
                     }
                     m = m + 1
                     continue
                 }
             }
 
-            var status = raw.toInt()
+            var status = -1
             var length = -1
             var lengthDisplay = "-"
-            var lp = 0
-            while (lp < lenNeededIdx.size()) {
-                if (lenNeededIdx.get(lp) == ("" + m)) {
-                    var lraw = lengths.get(lp)
-                    lengthDisplay = lenOrDash(lraw)
+            if (useHeaders) {
+                // Corpo (2xx-4xx) - status não disponível com headers nesta
+                // build; tamanho do corpo é o sinal.
+                length = raw.length()
+                lengthDisplay = "" + length
+                status = 200
+                var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
+                if (decision.startsWith("include")) {
+                    var note = ""
+                    if (decision.contains(":inconclusive")) { note = "inconclusive" }
+                    var result = DirResult(url, status, lengthDisplay, note)
+                    foundCount = foundCount + 1
+                    emitResult(result, cfg, colorOn)
+                }
+            } else {
+                status = raw.toInt()
+                // Busca length para o subset que precisa: filtro de length,
+                // baseline soft-404 com status igual, ou (sem headers) todos
+                // os sobreviventes - o body 1-arg é grátis e não lança em 4xx.
+                var wantsLen = false
+                if (useHeaders == false) { wantsLen = true }
+                if (needLength && status != 404) { wantsLen = true }
+                if (baseline.softDetected() && status == baseline.status()) { wantsLen = true }
+                if (wantsLen) {
+                    var lraw = bodyOnceWithRetries(url, "", false, cfg.retries())
                     if (lraw.startsWith("ERR:") == false) {
-                        length = lraw.toInt()
+                        length = lraw.length()
+                        lengthDisplay = "" + length
                     }
                 }
-                lp = lp + 1
-            }
-
-            var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
-            if (decision.startsWith("include")) {
-                var note = ""
-                if (decision.contains(":inconclusive")) { note = "inconclusive" }
-                var result = DirResult(url, status, lengthDisplay, note)
-                foundCount = foundCount + 1
-                emitResult(result, cfg, colorOn)
+                var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
+                if (decision.startsWith("include")) {
+                    var note = ""
+                    if (decision.contains(":inconclusive")) { note = "inconclusive" }
+                    var result = DirResult(url, status, lengthDisplay, note)
+                    foundCount = foundCount + 1
+                    emitResult(result, cfg, colorOn)
+                }
             }
             m = m + 1
         }

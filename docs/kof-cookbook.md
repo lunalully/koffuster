@@ -730,3 +730,5 @@ raw-string parsing instead of `net.*`) — but future work should keep
 re-checking this list against the real jar rather than trusting the
 `learn/`/`docs/` prose, exactly per `AGENTS.md`'s own rule: *"if syntax is
 uncertain: compile ... compiler result outranks memory."*
+
+> NOTA (v0.2.0): cookbook da 0.2.6-beta, mantido como registro histórico dos padrões comprovados. Na v0.2.0 (KOF 0.5.0-beta) os padrões de spawn dinâmico/catch substituem os workarounds de slots unrolled.

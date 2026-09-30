@@ -1,0 +1,172 @@
+// modes_vhost.kf - o driver do modo `vhost`: enumeração de virtual hosts
+// variando o header Host. (Este arquivo não existia na versão 0.1.0 - o
+// modo estava registrado no main.kf e no help, mas nunca implementado.)
+
+import kof.process
+
+Bool runVhostMode(String[] args) {
+    var cfg = parseModeArgs(args, 1, "vhost")
+
+    if (cfg.help()) {
+        println(vhostHelpText())
+        return true
+    }
+    if (cfg.valid() == false) {
+        log.error("koffuster vhost: " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    var noColorEnv = envIsSet("NO_COLOR")
+    var colorOn = colorsEnabled(cfg.color(), false, cfg.quiet(), cfg.format(), noColorEnv)
+
+    printBanner(cfg.quiet(), false, cfg.format())
+    if (cfg.verbose()) {
+        log.error(configEcho(cfg))
+    }
+
+    var authHeader = ""
+    if (cfg.auth().length() > 0) {
+        authHeader = "Basic " + base64Encode(cfg.auth())
+    }
+    var baseHeaders = buildHeaders(cfg.userAgent(), cfg.headers(), cfg.cookie(), authHeader)
+
+    http.timeout(cfg.timeoutSec())
+    var startMs = time.now()
+
+    var words = loadWordlist(cfg.wordlist())
+    if (cfg.quiet() == false) {
+        log.error("koffuster vhost: " + words.size() + " candidatos, alvo " + redactUrl(cfg.url()))
+    }
+
+    var width = snapThreads(cfg.threads())
+
+    // -- baseline: dois Hosts aleatórios; se o status e o tamanho do corpo
+    // coincidirem, isso vira a assinatura "não achado" (mesma filosofia do
+    // soft-404 do modo dir).
+    var baseLen = -1
+    var baseErr = false
+    var probe1 = bodyWithHeaders(cfg.url(), baseHeaders + "\r\nHost: " + controlToken(71))
+    var probe2 = bodyWithHeaders(cfg.url(), baseHeaders + "\r\nHost: " + controlToken(73))
+    if (probe1.startsWith("ERR:") || probe2.startsWith("ERR:")) {
+        baseErr = true
+    } else if (probe1.length() == probe2.length()) {
+        baseLen = probe1.length()
+    } else {
+        baseErr = true
+    }
+    if (cfg.verbose()) {
+        if (baseErr) {
+            log.error("koffuster vhost: baseline inconsistente (status/corpo variam entre Hosts aleatórios) - comparando por diferença de tamanho")
+        } else {
+            log.error("koffuster vhost: baseline length=" + baseLen)
+        }
+    }
+
+    var totalOps = 2
+    var foundCount = 0
+    var errorCount = 0
+
+    var total = words.size()
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        var batchHosts = listOf<String>()
+        var batchUrls = listOf<String>()
+        var batchHdrs = listOf<String>()
+        var j = 0
+        while (j < count) {
+            var host = words.get(idx + j)
+            if (cfg.domain().length() > 0) {
+                host = host + "." + cfg.domain()
+            }
+            batchHosts.add(host)
+            batchUrls.add(cfg.url())
+            batchHdrs.add(baseHeaders + "\r\nHost: " + host)
+            j = j + 1
+        }
+
+        var results = runVhostBatch(width, batchUrls, batchHdrs, count)
+        totalOps = totalOps + count
+
+        var m = 0
+        while (m < count) {
+            var raw = results.get(m)
+            var host = batchHosts.get(m)
+            if (raw.startsWith("ERR:")) {
+                var err = raw.substring(4)
+                if (err.startsWith("http")) {
+                    // 5xx real: o Host existe mas o alvo responde erro.
+                    // Com header custom, o status exato sai da exceção.
+                    var st = toIntOr(err.substring(4), -1)
+                    if (baseLen < 0 || st != -1) {
+                        foundCount = foundCount + 1
+                        var result = VhostResult(host, st, "-", "http5xx")
+                        emitVhostResult(result, cfg, colorOn)
+                    }
+                } else if (isRetryable("ERR:" + err) && cfg.retries() > 0) {
+                    var retried = bodyWithHeaders(cfg.url(), batchHdrs.get(m))
+                    var attempt = 1
+                    while (retried.startsWith("ERR:") && isRetryable(retried) && attempt <= cfg.retries()) {
+                        time.sleep(200 + (attempt * 300))
+                        retried = bodyWithHeaders(cfg.url(), batchHdrs.get(m))
+                        attempt = attempt + 1
+                    }
+                    if (retried.startsWith("ERR:") == false) {
+                        raw = retried
+                    } else {
+                        errorCount = errorCount + 1
+                        if (cfg.verbose()) { log.error("erro: " + host + " -> " + retried.substring(4)) }
+                        m = m + 1
+                        continue
+                    }
+                } else {
+                    errorCount = errorCount + 1
+                    if (cfg.verbose()) { log.error("erro: " + host + " -> " + err) }
+                    m = m + 1
+                    continue
+                }
+            }
+            if (raw.startsWith("ERR:")) {
+                m = m + 1
+                continue
+            }
+            var len = raw.length()
+            if (baseLen >= 0 && len != baseLen) {
+                foundCount = foundCount + 1
+                var result = VhostResult(host, 200, "" + len, "")
+                emitVhostResult(result, cfg, colorOn)
+            } else if (baseLen < 0 && len > 0) {
+                foundCount = foundCount + 1
+                var result = VhostResult(host, 200, "" + len, "no-baseline")
+                emitVhostResult(result, cfg, colorOn)
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+    }
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount, errorCount)
+    return true
+}
+
+Bool emitVhostResult(VhostResult r, Config cfg, Bool colorOn) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatVhostJsonl(r)
+    } else {
+        line = formatVhostText(r, colorOn)
+    }
+    println(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") { fileLine = formatVhostText(r, false) }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
+}

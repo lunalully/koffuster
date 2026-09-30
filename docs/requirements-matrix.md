@@ -211,3 +211,5 @@ parser (no usage errors); the bare `dns`/`s3` examples that hit the real public
 default endpoints (`dns.google`, `s3.amazonaws.com`) from this sandboxed network
 correctly report the failure honestly (dns: exit 1, resolver unreachable; s3:
 real AWS answered normally) rather than crashing either way.
+
+> NOTA (v0.2.0): matriz da 0.1.0 (0.2.6-beta), mantida como registro histórico. A CLI mudou (threads livre, -f, flags removidas) e o modo vhost foi implementado — veja o README atual.

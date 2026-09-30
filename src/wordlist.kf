@@ -1,22 +1,28 @@
-// wordlist.kf - load a wordlist file (or stdin) and expand extensions for
-// dir mode.
+// wordlist.kf - carrega uma wordlist (arquivo ou stdin) e expande
+// extensões para o modo dir.
 //
-// No line-streaming API exists on this build (cookbook P4) - the whole
-// file (or the whole of /dev/stdin) is read into one String, then split on
-// "\n". This is a real memory tradeoff for very large wordlists, disclosed
-// in the README/requirements matrix, not something a chunked reader could
-// avoid here.
+// Ainda não existe API de leitura em streaming no KOF: o arquivo inteiro
+// (ou todo o stdin) é lido de uma vez, então wordlists muito grandes
+// consomem memória proporcional ao tamanho. Limitação real, documentada.
 
 import kof.process
 
 List<String> loadWordlist(String pathOrDash) {
     var content = ""
     if (pathOrDash == "-") {
-        content = Path("/dev/stdin").readText()
+        var p = Path("/dev/stdin")
+        if (p.exists()) {
+            var c = p.readText()
+            if (c != null) { content = c }
+        }
     } else {
-        content = Path(pathOrDash).readText()
+        var p = Path(pathOrDash)
+        if (p.exists()) {
+            var c = p.readText()
+            if (c != null) { content = c }
+        }
     }
-    if (content == null) {
+    if (content.length() == 0) {
         log.error("koffuster: cannot read wordlist: " + pathOrDash)
         process.exit(2)
         return listOf<String>()
@@ -26,14 +32,9 @@ List<String> loadWordlist(String pathOrDash) {
     var i = 0
     while (i < rawLines.length) {
         var line = rawLines[i]
-        // Strip a trailing \r (CRLF wordlists) - this is line-ending
-        // cleanup, not the "don't trim internal spaces" policy below.
         if (line.endsWith("\r")) {
             line = line.substring(0, line.length() - 1)
         }
-        // Default policy: skip blank lines, keep every other line
-        // verbatim (leading/trailing spaces inside a real word are kept,
-        // per architecture.md section 3).
         if (line.length() > 0) {
             out.add(line)
         }
@@ -42,9 +43,7 @@ List<String> loadWordlist(String pathOrDash) {
     return out
 }
 
-// Parses a comma-separated extension list ("php,html" or "" for none),
-// trimming each entry and dropping a stray leading dot if the user wrote
-// one (".php" and "php" both work).
+// "php,html" ou "" -> lista de extensões (aceita ".php" também).
 List<String> parseExtensions(String csv) {
     var out = listOf<String>()
     if (csv.length() == 0) { return out }
@@ -59,9 +58,7 @@ List<String> parseExtensions(String csv) {
     return out
 }
 
-// For each word, emits the word itself plus word.ext for every extension.
-// Order: bare word first, then each extension, per word - so a whole word
-// and all its extension variants stay adjacent for readable progress.
+// Palavra pura primeiro, depois palavra.ext para cada extensão.
 List<String> expandExtensions(List<String> words, List<String> exts) {
     var out = listOf<String>()
     var i = 0

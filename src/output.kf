@@ -1,27 +1,19 @@
 import kof.process
 
-// output.kf - text/JSONL result printing, banner, colors, append+flush to
-// -o, and the final summary. Results go to stdout; everything else
-// (banner, progress, summary) goes to stderr, per architecture.md
-// section 8.
+// output.kf - formatação text/JSONL, banner, cores, append+flush para -o
+// e o resumo final. Resultados vão para stdout; banner, progresso, resumo
+// e erros vão para stderr, via log.error (o namespace System ainda não
+// resolve nesta build do KOF).
 
-// `length` fields are String, not Int, across every result record: the
-// sentinel for "not fetched/unknown" is the single character "-" (never
-// the misleading "-1", which reads as a real negative length) and JSON
-// has no way to encode "-" as a number, so json.encode(record) needs the
-// field itself to be a String to show "-" correctly in JSONL too. Use
-// sched.lenOrDash(...) to build this field from a batch result.
 record DirResult(String url, Int status, String length, String note)
 record DnsResult(String name, String outcome, String ip)
 record VhostResult(String host, Int status, String length, String note)
 record FuzzResult(String url, Int status, String length, String word)
 record StoreResult(String bucket, String url, Int status, String state)
 
-// ANSI color codes by status class. Colors are OFF by default (no
-// reliable TTY detection exists on this build) and only turned on by an
-// explicit --color; NO_COLOR, --no-color, --quiet and jsonl output all
-// force them back off, handled by the caller deciding `colorEnabled`
-// before calling these.
+// ANSI por classe de status. Cores OFF por padrão (sem detecção confiável
+// de TTY); só com --color explícito. NO_COLOR, --no-color, --quiet e jsonl
+// forçam desligado (decisão no chamador).
 String colorFor(Int status) {
     if (status >= 200 && status < 300) { return "\u001b[32m" }
     if (status >= 300 && status < 400) { return "\u001b[36m" }
@@ -33,8 +25,6 @@ String colorReset() {
     return "\u001b[0m"
 }
 
-// Right-pads a status/length column to a fixed width for aligned text
-// output ("200   1234   /admin").
 String padRight(String s, Int width) {
     var out = s
     while (out.length() < width) {
@@ -94,50 +84,36 @@ String formatStoreText(StoreResult r) {
 }
 String formatStoreJsonl(StoreResult r) { return json.encode(r) }
 
-// Appends one already-formatted line to the output file and flushes by
-// reopening/writing immediately (kof.io's appendText is the only proven
-// durability mechanism on this build - cookbook P9 - there is no explicit
-// flush() call, but each appendText call is itself a complete, immediately
-// durable write, confirmed by a real SIGINT test).
+// Append + flush por escrita imediata: cada appendText é uma escrita
+// completa e durável, então resultados sobrevivem a Ctrl+C.
 Bool appendResultLine(String outPath, String line) {
     if (outPath.length() == 0) { return false }
     Path(outPath).appendText(line + "\n")
     return true
 }
 
-// Reads banner.txt. The launcher (bin/koffuster) sets KOFFUSTER_BANNER to
-// the install root's absolute banner.txt path so the banner still shows
-// when Koffuster is run from any other working directory (architecture.md
-// section 1's out-of-tree requirement) - a bare relative "banner.txt" would
-// only resolve when the caller happens to be sitting in the project root.
-// Falls back to a relative "banner.txt" (useful when running straight out
-// of the source tree without the launcher), then to plain "Koffuster" if
-// neither exists or the file is empty.
-// config.has() does NOT see real OS environment variables on this build
-// (it returned false for a set NO_COLOR / KOFFUSTER_BANNER); config.env()
-// does, returning null when unset. So "is set" = env() != null.
+// config.env retorna String? (null quando a variável não existe) - o narrow
+// explícito evita NPE ao chamar .length().
 Bool envIsSet(String key) {
     var v = config.env(key)
     return v != null
 }
 
 String bannerText() {
-    // config.env(name) returns a real Java null (not "") for an unset var
-    // - calling .length() on that crashes with an NPE - so envIsSet(...)
-    // must be checked first, every time.
     if (envIsSet("KOFFUSTER_BANNER")) {
         var envPath = config.env("KOFFUSTER_BANNER")
-        if (envPath.length() > 0) {
+        if (envPath != null && envPath.length() > 0) {
             var pe = Path(envPath)
             if (pe.exists()) {
                 var contentE = pe.readText()
-                if (contentE.trim().length() > 0) { return contentE }
+                if (contentE != null && contentE.trim().length() > 0) { return contentE }
             }
         }
     }
     var p = Path("banner.txt")
     if (p.exists() == false) { return "Koffuster" }
     var content = p.readText()
+    if (content == null) { return "Koffuster" }
     if (content.trim().length() == 0) { return "Koffuster" }
     return content
 }
@@ -157,26 +133,6 @@ Bool colorsEnabled(Bool colorFlag, Bool noColorFlag, Bool quiet, String format, 
     return colorFlag
 }
 
-// Prints the final run summary to stderr (never stdout - results-only
-// pipelines must stay clean). Durations are tracked purely as Int
-// milliseconds (time.now() diffs), never Double, per the concat-bug note
-// in util_str.kf.
-//
-// `System` does not resolve at all on this build (`Undefined variable or
-// type: 'System' [SEM011]` - re-verified directly against
-// tests/stderr1/stderr1.kf, which the cookbook file shows but whose real
-// output was never actually captured; this is the correction to that).
-// `log.info` was independently confirmed to print to STDOUT and `log.error`
-// to STDERR (tests/logtest), so `log.error` is the only proven way to
-// reach stderr on this build - every "stderr" line below goes through it,
-// accepting its "<timestamp> ERROR " prefix rather than hiding a real
-// build limitation behind an unproven API.
-// durationMs is Long - `time.now()` returns Long (epoch milliseconds, far
-// too large for Int32) and there is no working Long->Int cast on this
-// build (`.toInt()` on a Long crashes codegen; a bare `Int(x)` cast isn't a
-// real function either - see docs/impl-notes.md), so any value derived
-// directly from `time.now()` just stays Long. Long concatenates into a
-// String correctly (unlike the Double bug), so this is safe to print.
 Bool printSummary(Bool quiet, Int totalOps, Int found, Int errors, Long durationMs) {
     if (quiet) { return false }
     log.error("summary: " + totalOps + " requests, " + found + " results, " + errors + " errors, " + durationMs + "ms")
@@ -194,10 +150,6 @@ Bool printProgress(String line) {
     return true
 }
 
-// Exit code 1 = the run completed but produced zero results AND had
-// operational errors (every request failed / resolver down / target
-// unreachable), so pipelines can detect total failure. A clean run that
-// simply found nothing still exits 0.
 Bool exitOnTotalFailure(Int results, Int errors) {
     if (results <= 0 && errors > 0) {
         process.exit(1)

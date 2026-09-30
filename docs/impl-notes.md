@@ -369,3 +369,5 @@ documented limitation on this runtime.**
 Unblock path: a KOF >= 0.5.0-beta runtime. There, `socket/connect/send/recv` with `Buffer(U8)`
 INOUT (RRQ bytes, recv buffer, 16-byte sockaddr_in) looks expressible on the JVM target, so re-spike
 with that runtime.
+
+> NOTA (v0.2.0): histórico da migração 0.2.6-beta -> 0.5.0-beta. Para o estado atual (spawn dinâmico, catch Exception, status exato, vhost implementado), veja o README e o cabeçalho de src/sched.kf.

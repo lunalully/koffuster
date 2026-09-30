@@ -1,7 +1,6 @@
-// modes_store.kf - s3 and gcs modes: read-only bucket existence/permission
-// checks. No custom headers are ever needed, so this uses the plain status
-// probe (exact codes for every status, cookbook P1a) - never GET, never
-// write.
+// modes_store.kf - modos s3 e gcs: checagem read-only de existência/
+// permissão de bucket. Só status probe - nunca GET de conteúdo, nunca
+// escrita.
 
 import kof.process
 
@@ -29,7 +28,8 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
     var endpoint = defaultEndpoint
     if (cfg.endpoint().length() > 0) { endpoint = cfg.endpoint() }
 
-    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    var noColorEnv = envIsSet("NO_COLOR")
+    printBanner(cfg.quiet(), false, cfg.format())
     if (cfg.verbose()) { log.error(configEcho(cfg)) }
 
     http.timeout(cfg.timeoutSec())
@@ -37,7 +37,7 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
 
     var buckets = loadWordlist(cfg.wordlist())
     if (cfg.quiet() == false) {
-        log.error("koffuster " + modeName + ": " + buckets.size() + " candidates, endpoint " + redactUrl(endpoint))
+        log.error("koffuster " + modeName + ": " + buckets.size() + " candidatos, endpoint " + redactUrl(endpoint))
     }
 
     var width = snapThreads(cfg.threads())
@@ -73,7 +73,7 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
             var state = "inconclusive"
             if (raw.startsWith("ERR:")) {
                 errorCount = errorCount + 1
-                if (cfg.verbose()) { log.error("error: " + redactUrl(url) + " -> " + raw.substring(4)) }
+                if (cfg.verbose()) { log.error("erro: " + redactUrl(url) + " -> " + raw.substring(4)) }
             } else {
                 status = raw.toInt()
                 if (status == 404) { state = "absent" }

@@ -1,17 +1,9 @@
-// main.kf - entry point, dispatch, --version, help.
-//
-// `System` does not resolve on this build at all (re-verified directly
-// against the cookbook's own tests/stderr1/stderr1.kf, whose real output
-// was never actually captured - see docs/impl-notes.md), so every stderr
-// line here goes through `log.error` (proven - tests/logtest) rather than
-// `System.err.println`. Non-zero exit codes go through `process.exit`
-// (kof.process, proven working - tests/spike_exit3), since `System.exit`
-// also fails to resolve.
+// main.kf - ponto de entrada, dispatch, --version, help top.
 
 import kof.process
 
 String versionString() {
-    return "0.1.0"
+    return "0.2.0"
 }
 
 main(args: String[]) {
@@ -64,36 +56,31 @@ main(args: String[]) {
         runTftpMode(args)
         return
     }
-    log.error("koffuster: unknown mode or option: " + first)
-    log.error("Usage: koffuster <mode> [options] | koffuster --help | koffuster --version | koffuster help <mode>")
+    log.error("koffuster: modo ou opção desconhecido: " + first)
+    log.error("Uso: koffuster <modo> [opções] | koffuster --help | koffuster help <modo>")
     process.exit(2)
 }
 
 Bool printTopHelp() {
-    println("koffuster " + versionString() + " - terminal enumeration tool")
+    println("koffuster " + versionString() + " - enumeração ativa de terminal")
     println("")
-    println("Usage:")
-    println("  koffuster <mode> [options]")
-    println("  koffuster --help | -h")
-    println("  koffuster --version")
-    println("  koffuster help <mode>")
+    println("Uso:")
+    println("  koffuster <modo> [opções]")
+    println("  koffuster help <modo>")
     println("")
-    println("Modes:")
-    println("  dir    brute-force directories/files on a web target")
-    println("  dns    subdomain enumeration via DNS-over-HTTPS")
-    println("  vhost  virtual host enumeration via the Host header")
-    println("  fuzz   FUZZ keyword substitution in URL/header/body")
-    println("  s3     S3 bucket existence/permission check (read-only)")
-    println("  gcs    GCS bucket existence/permission check (read-only)")
-    println("  tftp   not supported on this KOF build (see 'koffuster help tftp')")
+    println("Modos:")
+    println("  dir    força bruta de diretórios/arquivos")
+    println("  dns    subdomínios via DNS-over-HTTPS")
+    println("  vhost  virtual hosts via header Host")
+    println("  fuzz   substituição de FUZZ em URL/cabeçalho/corpo")
+    println("  s3     bucket S3 (somente leitura)")
+    println("  gcs    bucket GCS (somente leitura)")
+    println("  tftp   não suportado nesta build (veja 'koffuster help tftp')")
     println("")
-    println("Results go to stdout; banner, progress, summary and errors go to stderr.")
-    println("Run 'koffuster help <mode>' or 'koffuster <mode> --help' for every option,")
-    println("its default, and examples.")
-    println("")
-    println("Examples:")
-    println("  koffuster dir -u http://target/ -w words.txt")
-    println("  koffuster dns -d example.com -w subs.txt --format jsonl")
+    println("Resultados vão para stdout; banner, progresso e erros para stderr.")
+    println("Exemplos:")
+    println("  koffuster dir -u http://alvo/ -w words.txt")
+    println("  koffuster dns -d exemplo.com -w subs.txt -f jsonl")
     return true
 }
 
@@ -105,7 +92,7 @@ Bool printModeHelp(String mode) {
     if (mode == "s3") { println(storeHelpText("s3", "http://%s.s3.amazonaws.com/")); return true }
     if (mode == "gcs") { println(storeHelpText("gcs", "https://storage.googleapis.com/%s/")); return true }
     if (mode == "tftp") { println(tftpHelpText()); return true }
-    log.error("koffuster: unknown mode '" + mode + "' (modes: dir dns vhost fuzz s3 gcs tftp)")
+    log.error("koffuster: modo desconhecido '" + mode + "' (modos: dir dns vhost fuzz s3 gcs tftp)")
     process.exit(2)
     return false
 }

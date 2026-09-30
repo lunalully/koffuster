@@ -1,23 +1,8 @@
-// util_str.kf - small pure-KOF string/number helpers.
-//
-// Numbers: NEVER build a display string with `"literal" + someDouble` - on
-// this build that silently drops the value (proven: `"x=" + 3.14` prints
-// "x=" with nothing after it). Koffuster never uses Double for anything
-// displayed; durations are tracked as Int milliseconds via time.now()
-// (also proven safe), and Int concatenation ("" + someInt) works correctly
-// everywhere, so intToStr below is a thin, explicit wrapper rather than a
-// real workaround - it exists so call sites read as intentional formatting,
-// not an accidental raw "+".
-String intToStr(Int n) {
-    return "" + n
-}
+// util_str.kf - helpers puros de string/número.
 
-// Percent-encodes a string for safe use inside a URL path/query segment.
-// `net.*`/`encoding.*` do not resolve on this build (cookbook P3), and
-// java.net.URLEncoder interop is not reliably usable either, so this is a
-// hand-rolled RFC 3986 "unreserved characters" encoder using only proven
-// String/Int primitives (charAt returns the UTF-16 code unit as an Int,
-// confirmed in the cookbook).
+// Percent-encoding RFC 3986 para segmentos de URL (charset "unreserved").
+// O 0.5.0 ainda não expõe java.net.URLEncoder de forma confiável, então o
+// encoder manual continua sendo o caminho comprovado.
 String percentEncode(String s) {
     var out = ""
     var i = 0
@@ -54,18 +39,12 @@ String hexDigit(Int d) {
     return "F"
 }
 
-// Standard base64 (RFC 4648) alphabet.
+// Base64 RFC 4648 (ASCII apenas - suficiente para Basic Auth user:pass).
 String b64Char(Int v) {
     var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     return alphabet.substring(v, v + 1)
 }
 
-// Hand-rolled base64 encode. `java.util.Base64` does not resolve on this
-// build (cookbook P3) and `String.getBytes()` crashes the runtime with a
-// NoClassDefFoundError (cookbook P8), so this works directly off
-// `charAt(i)` (proven to return the UTF-16 code unit as an Int) treating
-// each character as one byte - correct for the ASCII `user:pass` Basic-Auth
-// strings this is used for; not a general UTF-8 byte encoder.
 String base64Encode(String s) {
     var out = ""
     var i = 0
@@ -93,12 +72,7 @@ String base64Encode(String s) {
     return out
 }
 
-// Parses a comma-separated list of Ints and/or "a-b" ranges (e.g.
-// "0,100-200,404") and reports whether `value` matches any entry. Parses
-// the spec fresh each call rather than pre-building a structure - simple
-// and fast enough for wordlist-sized candidate counts, and avoids ever
-// needing a reference-typed array (`new T[n]` is broken on this build -
-// see docs/impl-notes.md).
+// "0,100-200,404" -> true se value casa com alguma entrada.
 Bool inRangeList(String spec, Int value) {
     if (spec.length() == 0) { return false }
     var parts = spec.split(",")
@@ -115,7 +89,7 @@ Bool inRangeList(String spec, Int value) {
                     var lo = loStr.toInt()
                     var hi = hiStr.toInt()
                     if (value >= lo && value <= hi) { matched = true }
-                } catch (String e) {
+                } catch (Exception e) {
                     matched = false
                 }
                 if (matched) { return true }
@@ -124,7 +98,7 @@ Bool inRangeList(String spec, Int value) {
                 try {
                     var exact = token.toInt()
                     if (value == exact) { matched2 = true }
-                } catch (String e) {
+                } catch (Exception e) {
                     matched2 = false
                 }
                 if (matched2) { return true }
@@ -135,17 +109,16 @@ Bool inRangeList(String spec, Int value) {
     return false
 }
 
-// Safe int parse with a fallback, for CLI option values.
+// Int parse com fallback.
 Int toIntOr(String s, Int fallback) {
     try {
         return s.toInt()
-    } catch (String e) {
+    } catch (Exception e) {
         return fallback
     }
 }
 
-// Strips "user:pass@" userinfo from a URL for any stderr/log display, so
-// credentials embedded in -u/--resolver/--endpoint never reach the log.
+// Remove "user:pass@" de uma URL para logs (credenciais nunca vazam).
 String redactUrl(String u) {
     var s = u.indexOf("://")
     if (s < 0) { return u }

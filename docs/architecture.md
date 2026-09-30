@@ -1,5 +1,13 @@
 # Koffuster — Architecture (authoritative build spec)
 
+> NOTA (v0.2.0): a implementação atual roda sobre **KOF 0.5.0-beta** (o
+> `kof` da distribuição instalada, com JVM embutida). O texto abaixo
+> documenta o desenho que orientou a 0.1.0 (0.2.6-beta) e continua
+> descrevendo a estrutura; as seções que citam bloqueios de compilador do
+> 0.2.6 (slots unrolled, spawn sem argumentos, `String` no catch) estão
+> superadas — veja o cabeçalho de `src/sched.kf` e o README para o estado
+> atual (spawn dinâmico, `catch (Exception e)`, status exato).
+
 Koffuster is an active enumeration tool for the terminal, implemented in KOF
 (Kof4j, targeting the **0.2.6-beta** runtime that the device's `bin/kof`
 launcher actually runs). This document is the contract implementers follow.

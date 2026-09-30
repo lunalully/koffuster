@@ -1,5 +1,9 @@
-// cli.kf - hand-rolled arg parsing (no argparse stdlib in KOF), the
-// Config record for `dir`, secret redaction, and help text.
+// cli.kf - parser de argumentos e textos de ajuda (KOF 0.5.0).
+//
+// Simplificação da CLI em relação à 0.1.0: threads aceita QUALQUER número
+// (spawn dinâmico), flags sem efeito removidas (-k/--insecure,
+// --no-banner, --delay, --rate, --wildcard-tests), e os helps por modo
+// ficaram diretos.
 
 record Config(
     String url,
@@ -7,8 +11,6 @@ record Config(
     String extensions,
     Int threads,
     Int timeoutSec,
-    Int delayMs,
-    Int rate,
     Int retries,
     String output,
     String format,
@@ -19,19 +21,14 @@ record Config(
     String proxy,
     String domain,
     String resolver,
-    Int wildcardTests,
-    Bool appendDomain,
     String body,
     String method,
     String endpoint,
     String statusInclude,
     String excludeStatus,
     String excludeLength,
-    Bool insecure,
     Bool quiet,
-    Bool noBanner,
     Bool color,
-    Bool noColor,
     Bool verbose,
     Bool help,
     Bool valid,
@@ -39,20 +36,12 @@ record Config(
 )
 
 Config defaultConfig() {
-    // excludeStatus defaults to "" (not "404"): the default 404 exclusion
-    // is implemented directly in classify.kf's decideResult as part of the
-    // "no --status whitelist given" branch, NOT by pre-seeding this field
-    // with "404" - doing that would make an explicit `--status 404`
-    // whitelist get silently re-excluded by the unset default, exactly the
-    // "silent conflict" architecture.md section 6 requires avoiding. An
-    // explicit `-b/--exclude-status` from the user still overwrites this
-    // field via withExcludeStatus and is applied after include, per spec.
     return Config(
-        "", "", "", 10, 10, 0, 0, 1, "", "text",
-        listOf<String>(), "", "", "koffuster/0.1", "",
-        "", "https://dns.google/resolve", 3, false, "", "GET", "http://%s.s3.amazonaws.com/",
+        "", "", "", 8, 10, 1, "", "text",
+        listOf<String>(), "", "", "koffuster/0.2",
+        "", "", "https://dns.google/resolve", "", "GET", "",
         "", "", "",
-        false, false, false, false, false, false, false, true, ""
+        false, false, false, false, true, ""
     )
 }
 
@@ -62,7 +51,6 @@ Bool argIs(String a, String short_, String long_) {
     return false
 }
 
-// Splits a "--name=value" token; returns "" for value if there's no '='.
 String optValueInline(String a) {
     var eq = a.indexOf("=")
     if (eq < 0) { return "" }
@@ -74,10 +62,9 @@ String optNameInline(String a) {
     return a.substring(0, eq)
 }
 
-// Generic option parser shared by every mode. `mode` picks which fields
-// are required once parsing finishes (dir/vhost/fuzz need -u; dns needs
-// -d; s3/gcs need neither but always need -w). One parser for every mode
-// avoids five near-identical copies of the same tokenizer.
+// Um parser único para todos os modos; `mode` define quais campos são
+// obrigatórios ao final (dir/vhost/fuzz precisam de -u; dns de -d; todos
+// de -w, exceto tftp que se recusa a rodar).
 Config parseModeArgs(String[] args, Int startIdx, String mode) {
     var c = defaultConfig()
     var i = startIdx
@@ -88,7 +75,7 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         var hasInline = raw.contains("=")
 
         if (argIs(name, "-h", "--help")) {
-            c = Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), true, c.valid(), c.errorMsg())
+            c = withHelp(c, true)
             i = i + 1
             continue
         }
@@ -97,33 +84,13 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
             i = i + 1
             continue
         }
-        if (name == "--no-banner") {
-            c = withNoBanner(c, true)
-            i = i + 1
-            continue
-        }
         if (name == "--color") {
             c = withColor(c, true)
             i = i + 1
             continue
         }
-        if (name == "--no-color") {
-            c = withNoColor(c, true)
-            i = i + 1
-            continue
-        }
         if (argIs(name, "-v", "--verbose")) {
             c = withVerbose(c, true)
-            i = i + 1
-            continue
-        }
-        if (argIs(name, "-k", "--insecure")) {
-            c = withInsecure(c, true)
-            i = i + 1
-            continue
-        }
-        if (name == "--append-domain") {
-            c = withAppendDomain(c, true)
             i = i + 1
             continue
         }
@@ -134,11 +101,9 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (argIs(name, "-x", "--extensions")) { isKnownValueOpt = true }
         else if (argIs(name, "-t", "--threads")) { isKnownValueOpt = true }
         else if (name == "--timeout") { isKnownValueOpt = true }
-        else if (name == "--delay") { isKnownValueOpt = true }
-        else if (name == "--rate") { isKnownValueOpt = true }
         else if (name == "--retries") { isKnownValueOpt = true }
         else if (argIs(name, "-o", "--output")) { isKnownValueOpt = true }
-        else if (name == "--format") { isKnownValueOpt = true }
+        else if (argIs(name, "-f", "--format")) { isKnownValueOpt = true }
         else if (argIs(name, "-H", "--header")) { isKnownValueOpt = true }
         else if (name == "--cookie") { isKnownValueOpt = true }
         else if (name == "--auth") { isKnownValueOpt = true }
@@ -149,7 +114,6 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (name == "--exclude-length") { isKnownValueOpt = true }
         else if (argIs(name, "-d", "--domain")) { isKnownValueOpt = true }
         else if (name == "--resolver") { isKnownValueOpt = true }
-        else if (name == "--wildcard-tests") { isKnownValueOpt = true }
         else if (name == "--body") { isKnownValueOpt = true }
         else if (argIs(name, "-X", "--method")) { isKnownValueOpt = true }
         else if (name == "--endpoint") { isKnownValueOpt = true }
@@ -157,18 +121,16 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (name == "--port") { isKnownValueOpt = true }
 
         if (isKnownValueOpt == false) {
-            return invalidConfig("unknown option: " + raw)
+            return invalidConfig("opção desconhecida: " + raw)
         }
 
-        // Everything above takes a value, either inline ("--name=value")
-        // or as the next argv entry.
         var value = ""
         var consumed = 1
         if (hasInline) {
             value = inlineVal
         } else {
             if (i + 1 >= args.length) {
-                return invalidConfig("missing value for " + raw)
+                return invalidConfig("faltou o valor de " + raw)
             }
             value = args[i + 1]
             consumed = 2
@@ -177,34 +139,28 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         var isNumOpt = false
         if (argIs(name, "-t", "--threads")) { isNumOpt = true }
         else if (name == "--timeout") { isNumOpt = true }
-        else if (name == "--delay") { isNumOpt = true }
-        else if (name == "--rate") { isNumOpt = true }
         else if (name == "--retries") { isNumOpt = true }
-        else if (name == "--wildcard-tests") { isNumOpt = true }
         else if (name == "--port") { isNumOpt = true }
         if (isNumOpt) {
-            if (toIntOr(value, -1) < 0) {
-                return invalidConfig("invalid value for " + name + ": '" + value + "' (expected a non-negative integer)")
+            var num = toIntOr(value, -1)
+            if (num < 0) {
+                return invalidConfig("valor inválido para " + name + ": '" + value + "' (esperava um inteiro >= 0)")
             }
-            if (toIntOr(value, -1) == 0) {
-                if (argIs(name, "-t", "--threads") || name == "--timeout") {
-                    return invalidConfig("invalid value for " + name + ": must be at least 1")
-                }
+            if (num == 0 && argIs(name, "-t", "--threads")) {
+                return invalidConfig("valor inválido para " + name + ": precisa ser >= 1")
             }
         }
 
         if (argIs(name, "-u", "--url")) { c = withUrl(c, value) }
         else if (argIs(name, "-w", "--wordlist")) { c = withWordlist(c, value) }
         else if (argIs(name, "-x", "--extensions")) { c = withExtensions(c, value) }
-        else if (argIs(name, "-t", "--threads")) { c = withThreads(c, toIntOr(value, 10)) }
+        else if (argIs(name, "-t", "--threads")) { c = withThreads(c, toIntOr(value, 8)) }
         else if (name == "--timeout") { c = withTimeout(c, toIntOr(value, 10)) }
-        else if (name == "--delay") { c = withDelay(c, toIntOr(value, 0)) }
-        else if (name == "--rate") { c = withRate(c, toIntOr(value, 0)) }
         else if (name == "--retries") { c = withRetries(c, toIntOr(value, 1)) }
         else if (argIs(name, "-o", "--output")) { c = withOutput(c, value) }
-        else if (name == "--format") {
+        else if (argIs(name, "-f", "--format")) {
             if (value != "text" && value != "jsonl") {
-                return invalidConfig("--format must be text or jsonl, got: " + value)
+                return invalidConfig("--format precisa ser text ou jsonl, veio: " + value)
             }
             c = withFormat(c, value)
         }
@@ -218,14 +174,13 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (name == "--exclude-length") { c = withExcludeLength(c, value) }
         else if (argIs(name, "-d", "--domain")) { c = withDomain(c, value) }
         else if (name == "--resolver") { c = withResolver(c, value) }
-        else if (name == "--wildcard-tests") { c = withWildcardTests(c, toIntOr(value, 3)) }
         else if (name == "--body") { c = withBody(c, value) }
         else if (argIs(name, "-X", "--method")) { c = withMethod(c, value.toUpperCase()) }
         else if (name == "--endpoint") { c = withEndpoint(c, value) }
         else if (name == "--server") { c = withUrl(c, value) }
         else if (name == "--port") { c = c }
         else {
-            return invalidConfig("unknown option: " + raw)
+            return invalidConfig("opção desconhecida: " + raw)
         }
 
         i = i + consumed
@@ -235,57 +190,57 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
 
     if (mode == "dir" || mode == "vhost" || mode == "fuzz") {
         if (c.url().length() == 0) {
-            return invalidConfig("missing required option: -u/--url (see: koffuster help " + mode + ")")
+            return invalidConfig("falta a opção obrigatória -u/--url (veja: koffuster help " + mode + ")")
         }
     }
     if (mode == "dns") {
         if (c.domain().length() == 0) {
-            return invalidConfig("missing required option: -d/--domain (see: koffuster help dns)")
+            return invalidConfig("falta a opção obrigatória -d/--domain (veja: koffuster help dns)")
         }
     }
     if (mode == "dir" || mode == "dns" || mode == "vhost" || mode == "fuzz" || mode == "s3" || mode == "gcs") {
         if (c.wordlist().length() == 0) {
-            return invalidConfig("missing required option: -w/--wordlist (see: koffuster help " + mode + ")")
+            return invalidConfig("falta a opção obrigatória -w/--wordlist (veja: koffuster help " + mode + ")")
         }
     }
     return c
 }
 
-// Kept as a thin named wrapper - modes_dir.kf calls this.
 Config parseDirArgs(String[] args, Int startIdx) {
     return parseModeArgs(args, startIdx, "dir")
 }
 
 Config invalidConfig(String msg) {
     var c = defaultConfig()
-    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), false, false, msg)
+    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), false, false, msg)
 }
 
-// -- small "with field X" builders (records have no setters, only the
-// positional constructor, so each of these rebuilds the whole record) ----
-Config withUrl(Config c, String v) { return Config(v, c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withWordlist(Config c, String v) { return Config(c.url(), v, c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExtensions(Config c, String v) { return Config(c.url(), c.wordlist(), v, c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withThreads(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), v, c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withTimeout(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), v, c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withDelay(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), v, c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withRate(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), v, c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withRetries(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), v, c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withOutput(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), v, c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withFormat(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), v, c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withCookie(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), v, c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withAuth(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), v, c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withUserAgent(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), v, c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withProxy(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), v, c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withStatusInclude(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), v, c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExcludeStatus(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), v, c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExcludeLength(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), v, c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withInsecure(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), v, c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withQuiet(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), v, c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withNoBanner(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), v, c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withColor(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), v, c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withNoColor(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), v, c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withVerbose(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), v, c.help(), c.valid(), c.errorMsg()) }
+// -- builders "with campo X" (records são imutáveis - cada um reconstrói) --
+
+Config withUrl(Config c, String v) { return Config(v, c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withWordlist(Config c, String v) { return Config(c.url(), v, c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withExtensions(Config c, String v) { return Config(c.url(), c.wordlist(), v, c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withThreads(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), v, c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withTimeout(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), v, c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withRetries(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), v, c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withOutput(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), v, c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withFormat(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), v, c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withCookie(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), v, c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withAuth(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), v, c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withUserAgent(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), v, c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withProxy(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), v, c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withDomain(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), v, c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withResolver(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), v, c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withBody(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), v, c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withMethod(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), v, c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withEndpoint(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), v, c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withStatusInclude(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), v, c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withExcludeStatus(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), v, c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withExcludeLength(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), v, c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withQuiet(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), v, c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withColor(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), v, c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+Config withVerbose(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), v, c.help(), c.valid(), c.errorMsg()) }
+Config withHelp(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), v, c.valid(), c.errorMsg()) }
 
 Config withHeaderAdded(Config c, String v) {
     var newHeaders = listOf<String>()
@@ -295,21 +250,11 @@ Config withHeaderAdded(Config c, String v) {
         i = i + 1
     }
     newHeaders.add(v)
-    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), newHeaders, c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg())
+    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), newHeaders, c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg())
 }
 
-// -- mode-specific field builders (dns/vhost/fuzz/s3/gcs) -----------------
-Config withDomain(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), v, c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withResolver(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), v, c.wildcardTests(), c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withWildcardTests(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), v, c.appendDomain(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withAppendDomain(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), v, c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withBody(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), v, c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withMethod(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), v, c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withEndpoint(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.delayMs(), c.rate(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.wildcardTests(), c.appendDomain(), c.body(), c.method(), v, c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.insecure(), c.quiet(), c.noBanner(), c.color(), c.noColor(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
+// -- redação de segredos --------------------------------------------------
 
-// -- secret redaction -----------------------------------------------------
-// Used for the -v config echo and anywhere a Config might be logged.
-// Never prints a real cookie/auth value.
 String redactedAuth(String auth) {
     if (auth.length() == 0) { return "" }
     return "<redacted>"
@@ -325,229 +270,173 @@ String configEcho(Config c) {
     s = s + " extensions=" + c.extensions()
     s = s + " threads=" + c.threads()
     s = s + " timeout=" + c.timeoutSec() + "s"
-    s = s + " delay=" + c.delayMs() + "ms"
-    s = s + " rate=" + c.rate()
-    s = s + " retries=" + c.retries()
     s = s + " format=" + c.format()
     s = s + " status=" + c.statusInclude()
     s = s + " excludeStatus=" + c.excludeStatus()
-    s = s + " excludeLength=" + c.excludeLength()
     s = s + " userAgent=" + c.userAgent()
     if (c.cookie().length() > 0) { s = s + " cookie=" + redactedCookie(c.cookie()) }
     if (c.auth().length() > 0) { s = s + " auth=" + redactedAuth(c.auth()) }
     return s
 }
 
-// -- help text --------------------------------------------------------
-String dirHelpText() {
-    var h = "koffuster dir - brute-force directories/files on a web target\n\n"
-    h = h + "Usage: koffuster dir -u <base-url> -w <wordlist|-> [options]\n\n"
-    h = h + "Required:\n"
-    h = h + "  -u, --url <base>          target base URL (path/query preserved)\n"
-    h = h + "  -w, --wordlist <file|->   wordlist file, or - for stdin\n\n"
-    h = h + "Mode-specific:\n"
-    h = h + "  -x, --extensions <csv>    extra extensions to try per word (php,html)\n\n"
-    h = h + "Common:\n"
-    h = h + "  -t, --threads <n>         concurrency, snapped to 1/2/4/8/16 (default 10->8)\n"
-    h = h + "      --timeout <sec>       per-request timeout in seconds (default 10)\n"
-    h = h + "      --delay <ms>          pause between batches (default 0)\n"
-    h = h + "      --rate <n>            global max ops/second, 0=unlimited (default 0)\n"
-    h = h + "      --retries <n>         retries for refused/timeout, idempotent only (default 1)\n"
-    h = h + "  -o, --output <file>       append+flush results to file too\n"
-    h = h + "      --format <text|jsonl> output format (default text)\n"
-    h = h + "  -H, --header <'K: V'>     extra header, repeatable (body-fetch requests only\n"
-    h = h + "                            - http.status on this build cannot carry headers)\n"
-    h = h + "      --cookie <c>          Cookie header (redacted in -v config echo)\n"
-    h = h + "      --auth <user:pass>    HTTP Basic auth (redacted in -v config echo)\n"
-    h = h + "  -a, --user-agent <ua>     User-Agent (default koffuster/0.1)\n"
-    h = h + "      --proxy <url>         HTTP proxy (launcher maps to JVM props)\n"
-    h = h + "  -s, --status <list>       include-only statuses; disables default 404 exclude\n"
-    h = h + "  -b, --exclude-status <l>  exclude statuses, applied after include (default 404)\n"
-    h = h + "      --exclude-length <l>  exclude by body length, values+ranges, applied last\n"
-    h = h + "  -k, --insecure            accepted, but TLS validation is not configurable on\n"
-    h = h + "                            this build (no effect - see requirements matrix)\n"
-    h = h + "  -q, --quiet               no banner/progress, results only\n"
-    h = h + "      --no-banner           omit the banner\n"
-    h = h + "      --color               force ANSI colors on\n"
-    h = h + "      --no-color            force colors off (also NO_COLOR env, --quiet, jsonl)\n"
-    h = h + "  -v, --verbose             echo the effective config (secrets redacted) to stderr\n"
-    h = h + "  -h, --help                this help\n\n"
-    h = h + "Filter precedence: --status whitelist (if given) disables the default 404\n"
-    h = h + "exclusion; --exclude-status is applied after; --exclude-length last.\n"
-    h = h + exitCodesHelp()
-    h = h + "\n"
-    h = h + "Examples:\n"
-    h = h + "  koffuster dir -u http://target/ -w words.txt\n"
-    h = h + "  koffuster dir -u http://target/app/ -w words.txt -x php,html -t 16 -s 200,301\n"
-    h = h + "  koffuster dir -u http://target/ -w words.txt -b 403 --exclude-length 0,100-200\n"
-    h = h + "  koffuster dir -u http://target/ -w words.txt -o hits.jsonl --format jsonl -q\n"
-    h = h + "  cat words.txt | koffuster dir -u http://target/ -w -\n"
-    h = h + "  koffuster dir -u http://target/ -w words.txt --auth user:pass --cookie \"sid=abc\" -H \"X-Env: test\" -v\n"
+// -- textos de ajuda ------------------------------------------------------
+
+String commonOptionsHelp() {
+    var h = "Comuns:\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n"
+    h = h + "  -t, --threads <n>            concorrência (padrão 8)\n"
+    h = h + "      --timeout <seg>          timeout por request (padrão 10)\n"
+    h = h + "  -o, --output <arquivo>       grava resultados também no arquivo\n"
+    h = h + "  -f, --format <text|jsonl>    formato de saída (padrão text)\n"
+    h = h + "      --proxy <url>            proxy HTTP (launcher mapeia p/ JVM)\n"
+    h = h + "  -q, --quiet                  sem banner/progresso, só resultados\n"
+    h = h + "      --color                  força cores ANSI\n"
+    h = h + "  -v, --verbose                mostra a config efetiva (segredos ocultos)\n"
+    h = h + "  -h, --help                   esta ajuda\n"
     return h
 }
 
-String commonOptionsHelp() {
-    var h = "Common:\n"
-    h = h + "  -t, --threads <n>         concurrency, snapped to 1/2/4/8 or 16 (mode-dependent)\n"
-    h = h + "      --timeout <sec>       per-request timeout in seconds (default 10)\n"
-    h = h + "      --delay <ms>          pause between batches (default 0)\n"
-    h = h + "      --rate <n>            global max ops/second, 0=unlimited (default 0)\n"
-    h = h + "      --retries <n>         retries for refused/timeout, idempotent only (default 1)\n"
-    h = h + "  -o, --output <file>       append+flush results to file too\n"
-    h = h + "      --format <text|jsonl> output format (default text)\n"
-    h = h + "      --proxy <url>         HTTP proxy, e.g. http://127.0.0.1:8080 (launcher maps\n"
-    h = h + "                            this to the JVM's http(s).proxyHost/proxyPort)\n"
-    h = h + "  -q, --quiet               no banner/progress, results only\n"
-    h = h + "      --no-banner           omit the banner\n"
-    h = h + "      --color               force ANSI colors on\n"
-    h = h + "      --no-color            force colors off (also NO_COLOR env, --quiet, jsonl)\n"
-    h = h + "  -v, --verbose             echo the effective config (secrets redacted) to stderr\n"
-    h = h + "  -h, --help                this help\n"
+String authOptionsHelp() {
+    var h = "  -H, --header <'Chave: Valor'> header extra, repetível\n"
+    h = h + "      --cookie <c>             cookie (oculto no -v)\n"
+    h = h + "      --auth <user:pass>       Basic Auth (oculto no -v)\n"
+    h = h + "  -a, --user-agent <ua>        User-Agent (padrão koffuster/0.2)\n"
     return h
 }
 
 String exitCodesHelp() {
-    var h = "\nExit codes: 0 ok (including a clean run that found nothing); 1 the run\n"
-    h = h + "completed with zero results AND at least one operational error (every\n"
-    h = h + "request refused/timed out, target unreachable); 2 usage error (bad/missing\n"
-    h = h + "option); 3 tftp only - mode unsupported on this build.\n"
+    var h = "\nCódigos de saída: 0 ok (inclusive uma execução limpa sem achados);\n"
+    h = h + "1 execução com zero resultados E pelo menos um erro operacional;\n"
+    h = h + "2 erro de uso; 3 só no tftp - modo não suportado.\n"
+    return h
+}
+
+String dirHelpText() {
+    var h = "koffuster dir - força bruta de diretórios/arquivos\n\n"
+    h = h + "Uso: koffuster dir -u <url-base> -w <wordlist|-> [opções]\n\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  -u, --url <base>             URL base (path/query preservados)\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "  -x, --extensions <csv>       extensões extras por palavra (php,html)\n"
+    h = h + "  -s, --status <lista>         só status listados; desliga exclusão de 404\n"
+    h = h + "  -b, --exclude-status <lista> exclui status (aplicado após -s)\n"
+    h = h + "      --exclude-length <lista> exclui por tamanho do corpo (0,100-200)\n\n"
+    h = h + authOptionsHelp()
+    h = h + "\n"
+    h = h + commonOptionsHelp()
+    h = h + "\nPrecedência dos filtros: -s (se dado) desliga a exclusão padrão de 404;\n"
+    h = h + "-b aplica depois; --exclude-length por último.\n"
+    h = h + exitCodesHelp()
+    h = h + "\nExemplos:\n"
+    h = h + "  koffuster dir -u http://alvo/ -w words.txt\n"
+    h = h + "  koffuster dir -u http://alvo/app/ -w words.txt -x php,html -t 16 -s 200,301\n"
+    h = h + "  cat words.txt | koffuster dir -u http://alvo/ -w -\n"
+    h = h + "  koffuster dir -u http://alvo/ -w words.txt -o hits.jsonl -f jsonl -q\n"
     return h
 }
 
 String dnsHelpText() {
-    var h = "koffuster dns - DNS subdomain enumeration via DNS-over-HTTPS (DoH)\n\n"
-    h = h + "Usage: koffuster dns -d <domain> -w <wordlist|-> [options]\n\n"
-    h = h + "Required:\n"
-    h = h + "  -d, --domain <domain>     base domain (candidates become word.domain)\n"
-    h = h + "  -w, --wordlist <file|->   wordlist file, or - for stdin\n\n"
-    h = h + "Mode-specific:\n"
-    h = h + "      --resolver <url>      DoH JSON endpoint (default https://dns.google/resolve)\n"
-    h = h + "                            \"custom resolver\" = a custom DoH endpoint here; raw\n"
-    h = h + "                            UDP DNS is unavailable on this build (no byte[] API)\n"
-    h = h + "      --wildcard-tests <n>  random subdomains probed first to detect a wildcard\n"
-    h = h + "                            DNS record (default 3); matching-IP candidates dropped\n\n"
+    var h = "koffuster dns - enumeração de subdomínios via DNS-over-HTTPS\n\n"
+    h = h + "Uso: koffuster dns -d <domínio> -w <wordlist|-> [opções]\n\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  -d, --domain <domínio>       domínio base (candidatos viram palavra.domínio)\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "      --resolver <url>        endpoint DoH JSON (padrão dns.google)\n\n"
     h = h + commonOptionsHelp()
-    h = h + "\nOutcomes: resolved (DoH Status 0), nxdomain (Status 3), resolver_down\n"
-    h = h + "(connect refused to --resolver), timeout. A DoH resolver answers HTTP 200 even\n"
-    h = h + "for NXDOMAIN, so these are distinguished by the JSON Status field, not HTTP status.\n"
-    h = h + "resolver_down and timeout are operational errors - shown under -v, counted in\n"
-    h = h + "the summary, never printed as a stdout result row.\n"
+    h = h + "\nResultados: resolved (Status 0), nxdomain (3), resolver_down, timeout.\n"
+    h = h + "Um resolver DoH responde HTTP 200 até para NXDOMAIN - a distinção vem do\n"
+    h = h + "campo JSON Status, não do HTTP. Probes de wildcard (3 nomes aleatórios)\n"
+    h = h + "rodam antes; candidatos que resolverem para o mesmo IP do wildcard são\n"
+    h = h + "descartados.\n"
     h = h + exitCodesHelp()
-    h = h + "\n"
-    h = h + "Examples:\n"
-    h = h + "  koffuster dns -d example.com -w subs.txt\n"
-    h = h + "  koffuster dns -d example.com -w subs.txt --resolver https://cloudflare-dns.com/dns-query --wildcard-tests 5\n"
-    h = h + "  koffuster dns -d example.com -w subs.txt --format jsonl -o found.jsonl\n"
+    h = h + "\nExemplos:\n"
+    h = h + "  koffuster dns -d exemplo.com -w subs.txt\n"
+    h = h + "  koffuster dns -d exemplo.com -w subs.txt -f jsonl -o found.jsonl\n"
     return h
 }
 
 String vhostHelpText() {
-    var h = "koffuster vhost - virtual host enumeration via the Host header\n\n"
-    h = h + "Usage: koffuster vhost -u <target> -w <wordlist|-> [options]\n\n"
-    h = h + "Required:\n"
-    h = h + "  -u, --url <target>        fixed target URL (Host header is what varies)\n"
-    h = h + "  -w, --wordlist <file|->   wordlist file, or - for stdin\n\n"
-    h = h + "Mode-specific:\n"
-    h = h + "      --domain <domain>     appended to each word when --append-domain is set\n"
-    h = h + "      --append-domain       candidate Host becomes word.domain instead of word\n"
-    h = h + "  -H, --header <'K: V'>     extra header, repeatable, sent on every request\n"
-    h = h + "      --cookie <c>          Cookie header (redacted in -v config echo)\n"
-    h = h + "      --auth <user:pass>    HTTP Basic auth (redacted in -v config echo)\n"
-    h = h + "  -a, --user-agent <ua>     User-Agent (default koffuster/0.1)\n\n"
-    h = h + commonOptionsHelp()
-    h = h + "\nHost header requires -Djdk.httpclient.allowRestrictedHeaders=host (set by the\n"
-    h = h + "launcher already). Because header-bearing requests throw on non-2xx on this\n"
-    h = h + "build, only 2xx candidates get an exact status; others are reported by error\n"
-    h = h + "class (refused/timeout/error) with a note, not a real HTTP status - documented\n"
-    h = h + "limitation, see requirements matrix. A hit is a candidate whose response status\n"
-    h = h + "or (for 2xx) body length differs from a random-Host baseline.\n"
-    h = h + exitCodesHelp()
+    var h = "koffuster vhost - enumeração de virtual hosts via header Host\n\n"
+    h = h + "Uso: koffuster vhost -u <alvo> -w <wordlist|-> [opções]\n\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  -u, --url <alvo>             URL fixa (o Host é o que varia)\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "  -d, --domain <domínio>       Host vira palavra.domínio (se dado)\n\n"
+    h = h + authOptionsHelp()
     h = h + "\n"
-    h = h + "Examples:\n"
-    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt --domain example.com --append-domain\n"
-    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt --format jsonl\n"
-    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt --auth user:pass --cookie \"sid=abc\" -H \"X-Env: test\"\n"
+    h = h + commonOptionsHelp()
+    h = h + "\nO header Host exige -Djdk.httpclient.allowRestrictedHeaders=host (o launcher\n"
+    h = h + "já exporta). Hit = candidato cujo status ou tamanho do corpo difere do\n"
+    h = h + "baseline (Hosts aleatórios). Com headers custom, o status exato só sai\n"
+    h = h + "para 5xx (via exceção do runtime); o resto reporta tamanho do corpo.\n"
+    h = h + exitCodesHelp()
+    h = h + "\nExemplos:\n"
+    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt --domain exemplo.com\n"
+    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt -f jsonl\n"
     return h
 }
 
 String fuzzHelpText() {
-    var h = "koffuster fuzz - FUZZ keyword substitution against a URL/header/body\n\n"
-    h = h + "Usage: koffuster fuzz -u <url-with-FUZZ> -w <wordlist|-> [options]\n\n"
-    h = h + "Required:\n"
-    h = h + "  -u, --url <url>           request URL; FUZZ may appear here, in -H, or --body\n"
-    h = h + "  -w, --wordlist <file|->   wordlist file, or - for stdin\n"
-    h = h + "                            (error if FUZZ appears nowhere)\n\n"
-    h = h + "Mode-specific:\n"
-    h = h + "  -X, --method <verb>       GET (default), POST, PUT, or DELETE\n"
-    h = h + "      --body <data>         request body for POST/PUT; may contain FUZZ\n"
-    h = h + "  -H, --header <'K: V'>     extra header, repeatable; value may contain FUZZ\n"
-    h = h + "      --cookie <c>          Cookie header, may contain FUZZ (redacted in -v echo)\n"
-    h = h + "      --auth <user:pass>    HTTP Basic auth (redacted in -v config echo)\n"
-    h = h + "  -a, --user-agent <ua>     User-Agent (default koffuster/0.1)\n"
-    h = h + "  -s, --status <list>       include-only statuses; disables the default 404 exclusion\n"
-    h = h + "  -b, --exclude-status <l>  exclude statuses, applied after include (default 404)\n"
-    h = h + "      --exclude-length <l>  exclude by body length, values+ranges (e.g. 0,100-200)\n\n"
+    var h = "koffuster fuzz - substituição de FUZZ em URL/cabeçalho/corpo\n\n"
+    h = h + "Uso: koffuster fuzz -u <url-com-FUZZ> -w <wordlist|-> [opções]\n\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  -u, --url <url>             URL; FUZZ pode aparecer aqui, em -H ou --body\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n"
+    h = h + "                              (erro se FUZZ não aparecer em lugar nenhum)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "  -X, --method <verbo>        GET (padrão), POST, PUT ou DELETE\n"
+    h = h + "      --body <dados>          corpo do POST/PUT; pode conter FUZZ\n"
+    h = h + "  -s, --status <lista>        só status listados; desliga exclusão de 404\n"
+    h = h + "  -b, --exclude-status <lista> exclui status\n"
+    h = h + "      --exclude-length <lista> exclui por tamanho do corpo\n\n"
+    h = h + authOptionsHelp()
+    h = h + "\n"
     h = h + commonOptionsHelp()
-    h = h + "\nEncoding: FUZZ in the URL is percent-encoded per candidate word; FUZZ in a\n"
-    h = h + "header or the body is substituted raw (not encoded) - documented, not a bug.\n"
-    h = h + "Every occurrence of FUZZ (url+headers+body combined) is replaced with the same\n"
-    h = h + "word. GET with FUZZ only in the URL and no custom headers/cookie/auth uses the\n"
-    h = h + "exact-status probe; otherwise (headers/cookie/auth/body/non-GET involved) the\n"
-    h = h + "header-bearing path is used, which only reports an exact status for 2xx (see\n"
-    h = h + "vhost's note - same build limit).\n"
+    h = h + "\nCodificação: FUZZ na URL é percent-encoded; em header/corpo é substituído\n"
+    h = h + "cru. Toda ocorrência de FUZZ (url+headers+body) recebe a mesma palavra.\n"
     h = h + exitCodesHelp()
-    h = h + "\n"
-    h = h + "Examples:\n"
-    h = h + "  koffuster fuzz -u \"http://target/search?q=FUZZ\" -w payloads.txt -s 200\n"
-    h = h + "  koffuster fuzz -u http://target/api -X POST --body \"user=FUZZ\" -w users.txt\n"
-    h = h + "  koffuster fuzz -u http://target/ -H \"X-Token: FUZZ\" -w tokens.txt --exclude-length 0\n"
-    h = h + "  koffuster fuzz -u http://target/ -H \"X-Token: FUZZ\" -w tokens.txt --auth user:pass --cookie \"sid=FUZZ\"\n"
-    return h
-}
-
-String tftpHelpText() {
-    var h = "koffuster tftp - TFTP file existence check (read-only, RRQ only)\n\n"
-    h = h + "Usage: koffuster tftp -u <host[:port]> -w <wordlist|-> [options]\n\n"
-    h = h + "Options:\n"
-    h = h + "  -u, --url <host[:port]>  TFTP server (accepted for symmetry with the\n"
-    h = h + "                           other modes; the mode refuses to run regardless)\n"
-    h = h + "      --server <host>      alias of --url\n"
-    h = h + "      --port <n>           TFTP port (default 69; accepted, unused - mode is blocked)\n"
-    h = h + "  -w, --wordlist <file|->  filename wordlist, or - for stdin\n\n"
-    h = h + "This mode always exits non-zero before sending anything - no option\n"
-    h = h + "combination makes it run. Listed here for discoverability only.\n\n"
-    h = h + "STATUS: not supported on this KOF build (0.2.6-beta), demonstrated blocker.\n"
-    h = h + "0.2.6-beta has no extern/FFI mechanism at all - the 'extern' keyword fails to\n"
-    h = h + "parse (see the TFTP/UDP FFI spike in docs/impl-notes.md), so there is no libc\n"
-    h = h + "socket() path to fall back to. The pure-Java DatagramSocket path is also\n"
-    h = h + "unusable: building the byte[] payload a TFTP RRQ/DATA/ACK packet needs\n"
-    h = h + "requires String.getBytes() (or any byte[]-returning call), which crashes the\n"
-    h = h + "runtime with NoClassDefFoundError (docs/kof-cookbook.md P8). TFTP would need\n"
-    h = h + "a later KOF release (0.5.0-beta+ is known to add FFI) to be implementable at\n"
-    h = h + "all. Running this mode prints one honest line to stderr and exits non-zero\n"
-    h = h + "rather than faking a result. Never implements TFTP write (WRQ) even if this\n"
-    h = h + "becomes unblocked later.\n"
-    h = h + "\n"
-    h = h + "Example (exits 3 with the message above):\n"
-    h = h + "  koffuster tftp --server 10.0.0.9 --port 69 -w files.txt\n"
+    h = h + "\nExemplos:\n"
+    h = h + "  koffuster fuzz -u \"http://alvo/busca?q=FUZZ\" -w payloads.txt -s 200\n"
+    h = h + "  koffuster fuzz -u http://alvo/api -X POST --body \"user=FUZZ\" -w users.txt\n"
+    h = h + "  koffuster fuzz -u http://alvo/ -H \"X-Token: FUZZ\" -w tokens.txt\n"
     return h
 }
 
 String storeHelpText(String modeName, String defaultEndpoint) {
-    var h = "koffuster " + modeName + " - bucket existence/permission check (read-only)\n\n"
-    h = h + "Usage: koffuster " + modeName + " -w <wordlist|-> [options]\n\n"
-    h = h + "Required:\n"
-    h = h + "  -w, --wordlist <file|->   bucket-name wordlist, or - for stdin\n\n"
-    h = h + "Mode-specific:\n"
-    h = h + "      --endpoint <tmpl>     %s replaced with the bucket name\n"
-    h = h + "                            (default " + defaultEndpoint + ")\n\n"
+    var h = "koffuster " + modeName + " - checagem de bucket (somente leitura)\n\n"
+    h = h + "Uso: koffuster " + modeName + " -w <wordlist|-> [opções]\n\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  -w, --wordlist <arquivo|->   nomes de bucket (ou - para stdin)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "      --endpoint <modelo>     %s vira o nome do bucket\n"
+    h = h + "                              (padrão " + defaultEndpoint + ")\n\n"
     h = h + commonOptionsHelp()
-    h = h + "\nGET/status only - never writes. Status mapping: 404 absent, 403\n"
-    h = h + "exists_denied (never treated as absent), 200 public, anything else or a\n"
-    h = h + "connection error -> inconclusive.\n"
+    h = h + "\nSó GET/status - nunca escreve. Mapeamento: 404 ausente, 403\n"
+    h = h + "exists_denied (nunca tratado como ausente), 200 público, resto ou erro\n"
+    h = h + "de conexão inconclusivo.\n"
     h = h + exitCodesHelp()
-    h = h + "\nExamples:\n"
+    h = h + "\nExemplos:\n"
     h = h + "  koffuster " + modeName + " -w buckets.txt\n"
-    h = h + "  koffuster " + modeName + " -w buckets.txt --endpoint 'http://127.0.0.1:8080/b/%s' --format jsonl\n"
+    h = h + "  koffuster " + modeName + " -w buckets.txt --endpoint 'http://127.0.0.1:8080/b/%s' -f jsonl\n"
+    return h
+}
+
+String tftpHelpText() {
+    var h = "koffuster tftp - checagem de existência de arquivo TFTP (RRQ, somente leitura)\n\n"
+    h = h + "Uso: koffuster tftp -u <host[:porta]> -w <wordlist|-> [opções]\n\n"
+    h = h + "Opções:\n"
+    h = h + "  -u, --url <host[:porta]>    servidor TFTP (aceito por simetria)\n"
+    h = h + "      --server <host>         alias de --url\n"
+    h = h + "      --port <n>              porta TFTP (padrão 69; aceita, não usada)\n"
+    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "STATUS: não suportado nesta build do KOF. TFTP precisa montar pacotes\n"
+    h = h + "binários (byte[]) - e String.getBytes() ainda derruba o runtime\n"
+    h = h + "(NoClassDefFoundError/JavaFX) mesmo no 0.5.0-beta, e o FFI/extern\n"
+    h = h + "documentado para o 0.5.0 não resolveu o parser nas versões atuais.\n"
+    h = h + "Este modo sempre imprime uma linha honesta no stderr e sai com código 3.\n"
+    h = h + "Nunca finge um resultado.\n"
     return h
 }

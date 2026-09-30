@@ -1,22 +1,11 @@
-// modes_tftp.kf - tftp mode: a registered mode with full --help that
-// honestly refuses to run, rather than faking a result.
+// modes_tftp.kf - modo tftp: registrado com --help completo, mas se recusa
+// a rodar honestamente.
 //
-// Demonstrated blocker on two independent paths (docs/impl-notes.md,
-// docs/requirements-matrix.md):
-//   1. libc/FFI (socket/sendto/recvfrom): KOF 0.2.6-beta has no extern/FFI
-//      mechanism at all - the `extern` keyword itself fails to parse, so
-//      there is no way to call out to libc, confirmed by a dedicated
-//      TFTP/UDP FFI spike (see impl-notes.md).
-//   2. Pure-Java DatagramSocket/DatagramPacket: both require a byte[]
-//      payload (TFTP is opcode+filename+mode for an RRQ, opcode+block#+
-//      data for DATA), and `String.getBytes()` - the only candidate path
-//      on this build to turn a String into a byte[] - crashes the runtime
-//      with `NoClassDefFoundError` (cookbook P8), independent of
-//      networking entirely.
-// With neither path available, no TFTP packet, request or response, can
-// be built or parsed on this build at all. TFTP is known to become
-// implementable once FFI lands (KOF 0.5.0-beta+). Recorded as a real,
-// demonstrated limitation, not a stub for appearance.
+// TFTP exige montar pacotes binários (byte[]) - e mesmo no KOF 0.5.0-beta,
+// String.getBytes() ainda derruba o runtime (erro de JavaFX), e o FFI/
+// extern documentado para o 0.5.0 não resolve no parser das builds
+// atuais. Sem nenhuma das rotas, nenhum pacote TFTP pode ser montado.
+// O modo imprime uma linha honesta no stderr e sai com código 3.
 
 import kof.process
 
@@ -28,16 +17,12 @@ Bool runTftpMode(String[] args) {
         return true
     }
     if (cfg.valid() == false) {
-        // tftp has no required-option validation in parseModeArgs (its
-        // only two inputs, --server/-w, are both optional at the parser
-        // level since the mode refuses to run regardless) - this branch
-        // only fires on a genuinely unknown/malformed option.
         log.error("koffuster tftp: " + cfg.errorMsg())
         process.exit(2)
         return false
     }
 
-    log.error("koffuster tftp: tftp/UDP is not supported on this KOF build: 0.2.6-beta has no extern/FFI mechanism (the 'extern' keyword fails to parse - see docs/impl-notes.md) and String.getBytes()/any byte[]-returning call crashes with NoClassDefFoundError, so no TFTP packet can be built by either path. Would need KOF 0.5.0-beta+ (FFI). Not implemented.")
+    log.error("koffuster tftp: TFTP/UDP não é suportado nas builds atuais do KOF (0.5.0-beta incluso): String.getBytes()/byte[] ainda derruba o runtime e o FFI/extern documentado para o 0.5.0 não resolveu no parser - não há como montar um pacote TFTP. Não implementado.")
     process.exit(3)
     return false
 }

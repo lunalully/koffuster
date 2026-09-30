@@ -770,3 +770,5 @@ this is the *compiler contributors'* operating contract, but it contains a
    a results dashboard), note the documented per-target gaps: WebSocket is
    JVM-only (`WEB004` elsewhere), static file serving is JVM-only
    (`WEB005`), and TLS server support is JVM-only (`WEB002` elsewhere).
+
+> NOTA (v0.2.0): relatório de investigação da build 0.2.6-beta, mantido como registro histórico. A v0.2.0 roda em KOF 0.5.0-beta; as limitações aqui listadas que foram corrigidas (getBytes/FFI continuam bloqueados, mas spawn/status/catch mudaram) estão refletidas no código atual.
