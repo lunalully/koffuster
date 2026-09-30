@@ -62,6 +62,51 @@ String optNameInline(String a) {
     return a.substring(0, eq)
 }
 
+// Forma curta (posicional): koffuster <modo> <alvo> <wordlist>. Sem
+// esquema, dir/vhost/fuzz assumem https:// (para http://, digite o
+// esquema); dns usa domínio puro e s3/gcs só têm a wordlist.
+String normalizeTargetUrl(String mode, String v) {
+    if (mode == "dir" || mode == "vhost" || mode == "fuzz") {
+        if (v.contains("://") == false) {
+            return "https://" + v
+        }
+    }
+    return v
+}
+
+String usageLine(String mode) {
+    if (mode == "dir") { return "koffuster dir <url> <wordlist> [opções]" }
+    if (mode == "dns") { return "koffuster dns <domínio> <wordlist> [opções]" }
+    if (mode == "vhost") { return "koffuster vhost <url> <wordlist> [opções]" }
+    if (mode == "fuzz") { return "koffuster fuzz <url-com-FUZZ> <wordlist> [opções]" }
+    if (mode == "tftp") { return "koffuster tftp <servidor[:porta]> <wordlist> [opções]" }
+    return "koffuster " + mode + " <wordlist> [opções]"
+}
+
+// Preenche os campos vazios na ordem do modo; sobra vira erro de uso.
+Config addPositional(Config c, String mode, String v) {
+    if (mode == "dir" || mode == "vhost" || mode == "fuzz") {
+        if (c.url().length() == 0) { return withUrl(c, normalizeTargetUrl(mode, v)) }
+        if (c.wordlist().length() == 0) { return withWordlist(c, v) }
+        return invalidConfig("argumento extra: '" + v + "' (uso: " + usageLine(mode) + ")")
+    }
+    if (mode == "dns") {
+        if (c.domain().length() == 0) { return withDomain(c, v) }
+        if (c.wordlist().length() == 0) { return withWordlist(c, v) }
+        return invalidConfig("argumento extra: '" + v + "' (uso: " + usageLine(mode) + ")")
+    }
+    if (mode == "s3" || mode == "gcs") {
+        if (c.wordlist().length() == 0) { return withWordlist(c, v) }
+        return invalidConfig("argumento extra: '" + v + "' (uso: " + usageLine(mode) + ")")
+    }
+    if (mode == "tftp") {
+        if (c.url().length() == 0) { return withUrl(c, v) }
+        if (c.wordlist().length() == 0) { return withWordlist(c, v) }
+        return invalidConfig("argumento extra: '" + v + "' (uso: " + usageLine(mode) + ")")
+    }
+    return invalidConfig("argumento inesperado: '" + v + "'")
+}
+
 // Um parser único para todos os modos; `mode` define quais campos são
 // obrigatórios ao final (dir/vhost/fuzz precisam de -u; dns de -d; todos
 // de -w, exceto tftp que se recusa a rodar).
@@ -79,7 +124,7 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
             i = i + 1
             continue
         }
-        if (argIs(name, "-q", "--quiet")) {
+        if (argIs(name, "-q", "--quiet") || argIs(name, "-silent", "--silent")) {
             c = withQuiet(c, true)
             i = i + 1
             continue
@@ -121,6 +166,18 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (name == "--port") { isKnownValueOpt = true }
 
         if (isKnownValueOpt == false) {
+            // Forma curta: argumento posicional. O primeiro preenche o
+            // alvo do modo (url/domínio - ou a wordlist, no s3/gcs), o
+            // segundo a wordlist. "-" sozinho vale como wordlist (stdin).
+            if (raw == "-" || raw.startsWith("-") == false) {
+                var positioned = addPositional(c, mode, raw)
+                if (positioned.valid() == false) {
+                    return positioned
+                }
+                c = positioned
+                i = i + 1
+                continue
+            }
             return invalidConfig("opção desconhecida: " + raw)
         }
 
@@ -151,7 +208,7 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
             }
         }
 
-        if (argIs(name, "-u", "--url")) { c = withUrl(c, value) }
+        if (argIs(name, "-u", "--url")) { c = withUrl(c, normalizeTargetUrl(mode, value)) }
         else if (argIs(name, "-w", "--wordlist")) { c = withWordlist(c, value) }
         else if (argIs(name, "-x", "--extensions")) { c = withExtensions(c, value) }
         else if (argIs(name, "-t", "--threads")) { c = withThreads(c, toIntOr(value, 8)) }
@@ -190,17 +247,17 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
 
     if (mode == "dir" || mode == "vhost" || mode == "fuzz") {
         if (c.url().length() == 0) {
-            return invalidConfig("falta a opção obrigatória -u/--url (veja: koffuster help " + mode + ")")
+            return invalidConfig("falta o alvo (uso: " + usageLine(mode) + "; veja: koffuster help " + mode + ")")
         }
     }
     if (mode == "dns") {
         if (c.domain().length() == 0) {
-            return invalidConfig("falta a opção obrigatória -d/--domain (veja: koffuster help dns)")
+            return invalidConfig("falta o domínio (uso: " + usageLine(mode) + "; veja: koffuster help dns)")
         }
     }
     if (mode == "dir" || mode == "dns" || mode == "vhost" || mode == "fuzz" || mode == "s3" || mode == "gcs") {
         if (c.wordlist().length() == 0) {
-            return invalidConfig("falta a opção obrigatória -w/--wordlist (veja: koffuster help " + mode + ")")
+            return invalidConfig("falta a wordlist (uso: " + usageLine(mode) + "; veja: koffuster help " + mode + ")")
         }
     }
     return c
@@ -289,7 +346,7 @@ String commonOptionsHelp() {
     h = h + "  -o, --output <arquivo>       grava resultados também no arquivo\n"
     h = h + "  -f, --format <text|jsonl>    formato de saída (padrão text)\n"
     h = h + "      --proxy <url>            proxy HTTP (launcher mapeia p/ JVM)\n"
-    h = h + "  -q, --quiet                  sem banner/progresso, só resultados\n"
+    h = h + "  -q, --quiet, -silent         sem banner/progresso/resumo, só resultados\n"
     h = h + "      --color                  força cores ANSI\n"
     h = h + "  -v, --verbose                mostra a config efetiva (segredos ocultos)\n"
     h = h + "  -h, --help                   esta ajuda\n"
@@ -313,10 +370,14 @@ String exitCodesHelp() {
 
 String dirHelpText() {
     var h = "koffuster dir - força bruta de diretórios/arquivos\n\n"
-    h = h + "Uso: koffuster dir -u <url-base> -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster dir <url> <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster dir -u <url> -w <wordlist|->)\n\n"
+    h = h + "Sem esquema na url, assume https:// (para http://, digite o esquema).\n\n"
     h = h + "Obrigatório:\n"
-    h = h + "  -u, --url <base>             URL base (path/query preservados)\n"
-    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "  <url>                        URL base; -u, --url também aceita\n"
+    h = h + "                               (path/query preservados)\n"
+    h = h + "  <wordlist|->                 wordlist; -w, --wordlist também aceita\n"
+    h = h + "                               (ou - para stdin)\n\n"
     h = h + "Específicas:\n"
     h = h + "  -x, --extensions <csv>       extensões extras por palavra (php,html)\n"
     h = h + "  -s, --status <lista>         só status listados; desliga exclusão de 404\n"
@@ -329,19 +390,22 @@ String dirHelpText() {
     h = h + "-b aplica depois; --exclude-length por último.\n"
     h = h + exitCodesHelp()
     h = h + "\nExemplos:\n"
-    h = h + "  koffuster dir -u http://alvo/ -w words.txt\n"
-    h = h + "  koffuster dir -u http://alvo/app/ -w words.txt -x php,html -t 16 -s 200,301\n"
-    h = h + "  cat words.txt | koffuster dir -u http://alvo/ -w -\n"
-    h = h + "  koffuster dir -u http://alvo/ -w words.txt -o hits.jsonl -f jsonl -q\n"
+    h = h + "  koffuster dir alvo.com.br words.txt\n"
+    h = h + "  koffuster dir http://alvo/app/ words.txt -x php,html -t 16 -s 200,301\n"
+    h = h + "  cat words.txt | koffuster dir alvo.com.br -\n"
+    h = h + "  koffuster dir alvo.com.br words.txt -o hits.jsonl -f jsonl -q\n"
     return h
 }
 
 String dnsHelpText() {
     var h = "koffuster dns - enumeração de subdomínios via DNS-over-HTTPS\n\n"
-    h = h + "Uso: koffuster dns -d <domínio> -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster dns <domínio> <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster dns -d <domínio> -w <wordlist|->)\n\n"
     h = h + "Obrigatório:\n"
-    h = h + "  -d, --domain <domínio>       domínio base (candidatos viram palavra.domínio)\n"
-    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "  <domínio>                    domínio base; -d, --domain também aceita\n"
+    h = h + "                               (candidatos viram palavra.domínio)\n"
+    h = h + "  <wordlist|->                 wordlist; -w, --wordlist também aceita\n"
+    h = h + "                               (ou - para stdin)\n\n"
     h = h + "Específicas:\n"
     h = h + "      --resolver <url>        endpoint DoH JSON (padrão dns.google)\n\n"
     h = h + commonOptionsHelp()
@@ -352,17 +416,21 @@ String dnsHelpText() {
     h = h + "descartados.\n"
     h = h + exitCodesHelp()
     h = h + "\nExemplos:\n"
-    h = h + "  koffuster dns -d exemplo.com -w subs.txt\n"
-    h = h + "  koffuster dns -d exemplo.com -w subs.txt -f jsonl -o found.jsonl\n"
+    h = h + "  koffuster dns exemplo.com subs.txt\n"
+    h = h + "  koffuster dns exemplo.com subs.txt -f jsonl -o found.jsonl\n"
     return h
 }
 
 String vhostHelpText() {
     var h = "koffuster vhost - enumeração de virtual hosts via header Host\n\n"
-    h = h + "Uso: koffuster vhost -u <alvo> -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster vhost <url> <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster vhost -u <url> -w <wordlist|->)\n\n"
+    h = h + "Sem esquema na url, assume https:// (para http://, digite o esquema).\n\n"
     h = h + "Obrigatório:\n"
-    h = h + "  -u, --url <alvo>             URL fixa (o Host é o que varia)\n"
-    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
+    h = h + "  <url>                        URL fixa; -u, --url também aceita\n"
+    h = h + "                               (o Host é o que varia)\n"
+    h = h + "  <wordlist|->                 wordlist; -w, --wordlist também aceita\n"
+    h = h + "                               (ou - para stdin)\n\n"
     h = h + "Específicas:\n"
     h = h + "  -d, --domain <domínio>       Host vira palavra.domínio (se dado)\n\n"
     h = h + authOptionsHelp()
@@ -374,18 +442,20 @@ String vhostHelpText() {
     h = h + "para 5xx (via exceção do runtime); o resto reporta tamanho do corpo.\n"
     h = h + exitCodesHelp()
     h = h + "\nExemplos:\n"
-    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt --domain exemplo.com\n"
-    h = h + "  koffuster vhost -u http://10.0.0.5/ -w hosts.txt -f jsonl\n"
+    h = h + "  koffuster vhost http://10.0.0.5/ hosts.txt --domain exemplo.com\n"
+    h = h + "  koffuster vhost http://10.0.0.5/ hosts.txt -f jsonl\n"
     return h
 }
 
 String fuzzHelpText() {
     var h = "koffuster fuzz - substituição de FUZZ em URL/cabeçalho/corpo\n\n"
-    h = h + "Uso: koffuster fuzz -u <url-com-FUZZ> -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster fuzz <url-com-FUZZ> <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster fuzz -u <url> -w <wordlist|->)\n\n"
     h = h + "Obrigatório:\n"
-    h = h + "  -u, --url <url>             URL; FUZZ pode aparecer aqui, em -H ou --body\n"
-    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n"
-    h = h + "                              (erro se FUZZ não aparecer em lugar nenhum)\n\n"
+    h = h + "  <url>                        URL com FUZZ; -u, --url também aceita\n"
+    h = h + "                               (FUZZ pode aparecer aqui, em -H ou --body)\n"
+    h = h + "  <wordlist|->                 wordlist; -w, --wordlist também aceita\n"
+    h = h + "                               (ou - para stdin; erro se FUZZ não aparecer)\n\n"
     h = h + "Específicas:\n"
     h = h + "  -X, --method <verbo>        GET (padrão), POST, PUT ou DELETE\n"
     h = h + "      --body <dados>          corpo do POST/PUT; pode conter FUZZ\n"
@@ -399,17 +469,19 @@ String fuzzHelpText() {
     h = h + "cru. Toda ocorrência de FUZZ (url+headers+body) recebe a mesma palavra.\n"
     h = h + exitCodesHelp()
     h = h + "\nExemplos:\n"
-    h = h + "  koffuster fuzz -u \"http://alvo/busca?q=FUZZ\" -w payloads.txt -s 200\n"
-    h = h + "  koffuster fuzz -u http://alvo/api -X POST --body \"user=FUZZ\" -w users.txt\n"
-    h = h + "  koffuster fuzz -u http://alvo/ -H \"X-Token: FUZZ\" -w tokens.txt\n"
+    h = h + "  koffuster fuzz \"alvo.com/busca?q=FUZZ\" payloads.txt -s 200\n"
+    h = h + "  koffuster fuzz alvo.com/api users.txt -X POST --body \"user=FUZZ\"\n"
+    h = h + "  koffuster fuzz alvo.com tokens.txt -H \"X-Token: FUZZ\"\n"
     return h
 }
 
 String storeHelpText(String modeName, String defaultEndpoint) {
     var h = "koffuster " + modeName + " - checagem de bucket (somente leitura)\n\n"
-    h = h + "Uso: koffuster " + modeName + " -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster " + modeName + " <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster " + modeName + " -w <wordlist|->)\n\n"
     h = h + "Obrigatório:\n"
-    h = h + "  -w, --wordlist <arquivo|->   nomes de bucket (ou - para stdin)\n\n"
+    h = h + "  <wordlist|->                 nomes de bucket; -w, --wordlist também\n"
+    h = h + "                               aceita (ou - para stdin)\n\n"
     h = h + "Específicas:\n"
     h = h + "      --endpoint <modelo>     %s vira o nome do bucket\n"
     h = h + "                              (padrão " + defaultEndpoint + ")\n\n"
@@ -419,14 +491,15 @@ String storeHelpText(String modeName, String defaultEndpoint) {
     h = h + "de conexão inconclusivo.\n"
     h = h + exitCodesHelp()
     h = h + "\nExemplos:\n"
-    h = h + "  koffuster " + modeName + " -w buckets.txt\n"
-    h = h + "  koffuster " + modeName + " -w buckets.txt --endpoint 'http://127.0.0.1:8080/b/%s' -f jsonl\n"
+    h = h + "  koffuster " + modeName + " buckets.txt\n"
+    h = h + "  koffuster " + modeName + " buckets.txt --endpoint 'http://127.0.0.1:8080/b/%s' -f jsonl\n"
     return h
 }
 
 String tftpHelpText() {
     var h = "koffuster tftp - checagem de existência de arquivo TFTP (RRQ, somente leitura)\n\n"
-    h = h + "Uso: koffuster tftp -u <host[:porta]> -w <wordlist|-> [opções]\n\n"
+    h = h + "Uso: koffuster tftp <servidor[:porta]> <wordlist|-> [opções]\n"
+    h = h + "     (forma clássica: koffuster tftp -u <host[:porta]> -w <wordlist|->)\n\n"
     h = h + "Opções:\n"
     h = h + "  -u, --url <host[:porta]>    servidor TFTP (aceito por simetria)\n"
     h = h + "      --server <host>         alias de --url\n"

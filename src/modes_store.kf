@@ -44,8 +44,14 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
     var totalOps = 0
     var foundCount = 0
     var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && buckets.size() >= 50)
+    var lastBucket = -1
 
     var total = buckets.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
     var idx = 0
     while (idx < total) {
         var count = width
@@ -84,13 +90,21 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
             if (state != "absent") {
                 foundCount = foundCount + 1
                 var result = StoreResult(bucket, url, status, state)
-                emitStoreResult(result, cfg)
+                emitStoreResult(result, cfg, held)
             }
             m = m + 1
         }
 
         idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
     }
+
+    if (showProgress) {
+        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
 
     var durationMs = time.now() - startMs
     printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
@@ -102,14 +116,14 @@ String bucketUrl(String endpointTemplate, String bucket) {
     return endpointTemplate.replace("%s", bucket)
 }
 
-Bool emitStoreResult(StoreResult r, Config cfg) {
+Bool emitStoreResult(StoreResult r, Config cfg, List<String> held) {
     var line = ""
     if (cfg.format() == "jsonl") {
         line = formatStoreJsonl(r)
     } else {
         line = formatStoreText(r)
     }
-    println(line)
+    held.add(line)
     if (cfg.output().length() > 0) {
         var fileLine = line
         if (cfg.format() != "jsonl") { fileLine = formatStoreText(r) }

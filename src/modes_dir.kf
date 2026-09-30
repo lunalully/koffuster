@@ -1,4 +1,14 @@
 // modes_dir.kf - o driver do modo `dir`.
+//
+// O loop principal trabalha em três fases por batch (tudo em spawn
+// paralelo, largura = -t/--threads):
+//   1.   sonda de status (ou corpo, quando há headers custom);
+//   1.5  classificação: erro operacional, excluído por status, ou
+//        candidato que ainda precisa do corpo;
+//   2.   corpos dos candidatos relevantes (em paralelo - antes era um GET
+//        sequencial por candidato, o que fazia wordlist longa parecer
+//        travada num alvo com latência real);
+//   3.   decisão de filtro (soft-404 etc.) e emissão.
 
 import kof.process
 
@@ -41,7 +51,6 @@ Bool runDirMode(String[] args) {
         log.error("koffuster dir: " + words.size() + " candidatos, alvo " + redactUrl(cfg.url()))
     }
 
-    var needLength = cfg.excludeLength().length() > 0
     var baseline = buildBaseline(cfg.url(), true)
 
     var width = snapThreads(cfg.threads())
@@ -54,11 +63,25 @@ Bool runDirMode(String[] args) {
         }
     }
 
+    if (cfg.quiet() == false && baseline.softDetected() && baseline.status() != 404) {
+        if (baseline.length() >= 0) {
+            log.error("aviso: soft-404 detectado - o alvo responde " + baseline.status() + " com corpo de " + baseline.length() + " bytes para paths inexistentes; candidatos iguais são filtrados (use -s <status> para vê-los)")
+        } else {
+            log.error("aviso: o alvo responde " + baseline.status() + " para paths inexistentes; candidatos iguais são filtrados (use -s <status> para vê-los)")
+        }
+    }
+
     var totalOps = 2
     var foundCount = 0
     var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && words.size() >= 50)
+    var lastBucket = -1
 
     var total = words.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
     var idx = 0
     while (idx < total) {
         var count = width
@@ -71,24 +94,30 @@ Bool runDirMode(String[] args) {
             j = j + 1
         }
 
-        var statusResults = listOf<String>()
+        // Fase 1: batch paralelo de sondagem.
+        var rawList = listOf<String>()
         if (useHeaders) {
             // Com headers custom, o status exato só sai para 5xx (via
             // exceção do runtime); o corpo (2xx-4xx) vem do http.get. A
             // classificação fica: status real se 5xx, senão length.
-            statusResults = runBodyBatch(width, batchUrls, hdrs, true, count)
-            totalOps = totalOps + count
+            rawList = runBodyBatch(width, batchUrls, hdrs, true, count)
         } else {
-            statusResults = runStatusBatch(width, batchUrls, count)
-            totalOps = totalOps + count
+            rawList = runStatusBatch(width, batchUrls, count)
         }
+        totalOps = totalOps + count
 
-        // Com headers: os resultados são corpos (ou ERR:http<code>).
-        // Sem headers: são status numéricos, e o length é buscado para os
-        // que passarem no filtro de status quando preciso.
+        // Fase 1.5: classificação.
+        // - stList guarda o status final de cada candidato (-1 = fora);
+        // - bUrls/bOrder listam, em ordem, quem ainda precisa do corpo:
+        //   sem headers, só quem pode virar resultado ou depende do corpo
+        //   para a decisão de soft-404. 404 puro e status fora do filtro
+        //   nunca buscam corpo.
+        var stList = listOf<Int>()
+        var bUrls = listOf<String>()
+        var bOrder = listOf<Int>()
         var m = 0
         while (m < count) {
-            var raw = statusResults.get(m)
+            var raw = rawList.get(m)
             var url = batchUrls.get(m)
 
             if (raw.startsWith("ERR:")) {
@@ -99,17 +128,24 @@ Bool runDirMode(String[] args) {
                     if (cfg.verbose()) {
                         log.error("erro: " + redactUrl(url) + " -> HTTP " + err.substring(4))
                     }
-                } else if (isRetryable("ERR:" + err) && cfg.retries() > 0) {
+                    stList.add(-1)
+                    m = m + 1
+                    continue
+                }
+                if (useHeaders == false && isRetryable("ERR:" + err) && cfg.retries() > 0) {
+                    // Retry de status: o resultado retentado segue para o
+                    // processamento (antes um sucesso no retry era
+                    // silenciosamente descartado). Com headers o sinal é o
+                    // corpo; o retry não se aplica a esse caminho.
                     var retried = statusWithRetries(url, cfg.retries())
                     if (retried.startsWith("ERR:") == false) {
                         raw = retried
-                        m = m + 1
-                        continue
                     } else {
                         errorCount = errorCount + 1
                         if (cfg.verbose()) {
                             log.error("erro: " + redactUrl(url) + " -> " + retried.substring(4))
                         }
+                        stList.add(-1)
                         m = m + 1
                         continue
                     }
@@ -118,58 +154,134 @@ Bool runDirMode(String[] args) {
                     if (cfg.verbose()) {
                         log.error("erro: " + redactUrl(url) + " -> " + err)
                     }
+                    stList.add(-1)
                     m = m + 1
                     continue
                 }
             }
 
-            var status = -1
-            var length = -1
-            var lengthDisplay = "-"
             if (useHeaders) {
-                // Corpo (2xx-4xx) - status não disponível com headers nesta
-                // build; tamanho do corpo é o sinal.
-                length = raw.length()
-                lengthDisplay = "" + length
-                status = 200
-                var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
-                if (decision.startsWith("include")) {
-                    var note = ""
-                    if (decision.contains(":inconclusive")) { note = "inconclusive" }
-                    var result = DirResult(url, status, lengthDisplay, note)
-                    foundCount = foundCount + 1
-                    emitResult(result, cfg, colorOn)
-                }
+                // O corpo já veio no batch; o status apresentado é 200 (5xx
+                // já foi convertido em ERR:http<code> acima).
+                stList.add(200)
             } else {
-                status = raw.toInt()
-                // Busca length para o subset que precisa: filtro de length,
-                // baseline soft-404 com status igual, ou (sem headers) todos
-                // os sobreviventes - o body 1-arg é grátis e não lança em 4xx.
-                var wantsLen = false
-                if (useHeaders == false) { wantsLen = true }
-                if (needLength && status != 404) { wantsLen = true }
-                if (baseline.softDetected() && status == baseline.status()) { wantsLen = true }
-                if (wantsLen) {
-                    var lraw = bodyOnceWithRetries(url, "", false, cfg.retries())
-                    if (lraw.startsWith("ERR:") == false) {
-                        length = lraw.length()
-                        lengthDisplay = "" + length
-                    }
+                var st = raw.toInt()
+                stList.add(st)
+
+                var eligibleByStatus = true
+                if (cfg.statusInclude().length() > 0) {
+                    eligibleByStatus = inRangeList(cfg.statusInclude(), st)
+                } else if (st == 404) {
+                    eligibleByStatus = false
                 }
-                var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
-                if (decision.startsWith("include")) {
-                    var note = ""
-                    if (decision.contains(":inconclusive")) { note = "inconclusive" }
-                    var result = DirResult(url, status, lengthDisplay, note)
-                    foundCount = foundCount + 1
-                    emitResult(result, cfg, colorOn)
+                if (eligibleByStatus && cfg.excludeStatus().length() > 0) {
+                    if (inRangeList(cfg.excludeStatus(), st)) { eligibleByStatus = false }
+                }
+                // O corpo só importa para quem passou no filtro de status:
+                // decideResult avalia o baseline soft-404 e o
+                // --exclude-length depois da elegibilidade por status.
+                // 404 puro, status fora de -s e status em -b são decididos
+                // sem corpo - buscá-lo nunca mudaria o resultado.
+                if (eligibleByStatus) {
+                    bUrls.add(url)
+                    bOrder.add(m)
                 }
             }
             m = m + 1
         }
 
+        // Fase 2: corpos em paralelo, com uma segunda passada só para os
+        // erros de rede retryable (quando --retries > 0).
+        var bResults = listOf<String>()
+        if (bUrls.size() > 0) {
+            bResults = runBodyBatch(width, bUrls, "", false, bUrls.size())
+            totalOps = totalOps + bUrls.size()
+            if (cfg.retries() > 0) {
+                var retryUrls = listOf<String>()
+                var retryPos = listOf<Int>()
+                var r = 0
+                while (r < bResults.size()) {
+                    var v = bResults.get(r)
+                    if (v.startsWith("ERR:") && isRetryable(v)) {
+                        retryUrls.add(bUrls.get(r))
+                        retryPos.add(r)
+                    }
+                    r = r + 1
+                }
+                if (retryUrls.size() > 0) {
+                    var retryRes = runBodyBatch(width, retryUrls, "", false, retryUrls.size())
+                    totalOps = totalOps + retryUrls.size()
+                    var fixed = listOf<String>()
+                    var cursor = 0
+                    var rr = 0
+                    while (rr < bResults.size()) {
+                        var v = bResults.get(rr)
+                        if (cursor < retryPos.size()) {
+                            if (retryPos.get(cursor) == rr) {
+                                v = retryRes.get(cursor)
+                                cursor = cursor + 1
+                            }
+                        }
+                        fixed.add(v)
+                        rr = rr + 1
+                    }
+                    bResults = fixed
+                }
+            }
+        }
+
+        // Fase 3: decisão de filtro e emissão (mesma semântica de antes).
+        var bCursor = 0
+        m = 0
+        while (m < count) {
+            var stFinal = stList.get(m)
+            if (stFinal < 0) {
+                m = m + 1
+                continue
+            }
+            var urlFinal = batchUrls.get(m)
+            var length = -1
+            var lengthDisplay = "-"
+            if (useHeaders) {
+                // Corpo (2xx-4xx) - status não disponível com headers nesta
+                // build; tamanho do corpo é o sinal.
+                length = rawList.get(m).length()
+                lengthDisplay = "" + length
+            } else {
+                var hasBody = false
+                if (bCursor < bOrder.size()) {
+                    if (bOrder.get(bCursor) == m) { hasBody = true }
+                }
+                if (hasBody) {
+                    var lraw = bResults.get(bCursor)
+                    bCursor = bCursor + 1
+                    if (lraw.startsWith("ERR:") == false) {
+                        length = lraw.length()
+                        lengthDisplay = "" + length
+                    }
+                }
+            }
+            var decision = decideResult(stFinal, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
+            if (decision.startsWith("include")) {
+                var note = ""
+                if (decision.contains(":inconclusive")) { note = "inconclusive" }
+                var result = DirResult(urlFinal, stFinal, lengthDisplay, note)
+                foundCount = foundCount + 1
+                emitResult(result, cfg, colorOn, held)
+            }
+            m = m + 1
+        }
+
         idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
     }
+
+    if (showProgress) {
+        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
 
     var durationMs = time.now() - startMs
     printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
@@ -177,14 +289,14 @@ Bool runDirMode(String[] args) {
     return true
 }
 
-Bool emitResult(DirResult r, Config cfg, Bool colorOn) {
+Bool emitResult(DirResult r, Config cfg, Bool colorOn, List<String> held) {
     var line = ""
     if (cfg.format() == "jsonl") {
         line = formatJsonl(r)
     } else {
         line = formatText(r, colorOn)
     }
-    println(line)
+    held.add(line)
     if (cfg.output().length() > 0) {
         var fileLine = line
         if (cfg.format() != "jsonl") {

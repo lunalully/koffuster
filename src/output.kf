@@ -133,6 +133,19 @@ Bool colorsEnabled(Bool colorFlag, Bool noColorFlag, Bool quiet, String format, 
     return colorFlag
 }
 
+// Resultados ficam segurados durante a varredura e vão para o stdout de uma
+// vez, depois do 100% - o terminal mostra só banner/progresso durante o
+// scan. O arquivo de -o é escrito na hora (append+flush), então Ctrl+C no
+// meio não perde o que já saiu para o arquivo.
+Bool flushHeldResults(List<String> held) {
+    var i = 0
+    while (i < held.size()) {
+        println(held.get(i))
+        i = i + 1
+    }
+    return true
+}
+
 Bool printSummary(Bool quiet, Int totalOps, Int found, Int errors, Long durationMs) {
     if (quiet) { return false }
     log.error("summary: " + totalOps + " requests, " + found + " results, " + errors + " errors, " + durationMs + "ms")
@@ -148,6 +161,38 @@ Bool printBanner(Bool quiet, Bool noBanner, String format) {
 Bool printProgress(String line) {
     log.error(line)
     return true
+}
+
+// -- progresso de varredura ("loading" de 0 a 100%) -----------------------
+
+// Barra de 20 células para stderr. `done` vai de 0 a `total`. Na saída,
+// cada célula cheia vale 5%; `found` é o placar de resultados até aqui.
+String scanProgressLine(Int done, Int total, Int found) {
+    var t = total
+    if (t <= 0) { t = 1 }
+    if (done > t) { done = t }
+    if (done < 0) { done = 0 }
+    var pct = (done * 100) / t
+    var filled = pct / 5
+    var bar = ""
+    var i = 0
+    while (i < 20) {
+        if (i < filled) { bar = bar + "█" } else { bar = bar + "░" }
+        i = i + 1
+    }
+    return "[" + bar + "] " + pct + "% (" + done + "/" + t + ") · " + found + " resultados"
+}
+
+// Só escreve quando `done` cruza uma faixa de 5% (no máximo ~21 linhas em
+// qualquer varredura); retorna a faixa atual para o chamador guardar e
+// devolver na próxima chamada - sem estado global.
+Int tickProgress(Int done, Int total, Int found, Int lastBucket) {
+    if (total <= 0) { return lastBucket }
+    var bucket = (done * 20) / total
+    if (bucket > 20) { bucket = 20 }
+    if (bucket == lastBucket) { return lastBucket }
+    log.error(scanProgressLine(done, total, found))
+    return bucket
 }
 
 Bool exitOnTotalFailure(Int results, Int errors) {

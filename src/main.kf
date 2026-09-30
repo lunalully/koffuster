@@ -57,7 +57,7 @@ main(args: String[]) {
         return
     }
     log.error("koffuster: modo ou opção desconhecido: " + first)
-    log.error("Uso: koffuster <modo> [opções] | koffuster --help | koffuster help <modo>")
+    log.error("Uso: koffuster <modo> <alvo> <wordlist> [opções] | koffuster --help | koffuster help <modo>")
     process.exit(2)
 }
 
@@ -65,7 +65,7 @@ Bool printTopHelp() {
     println("koffuster " + versionString() + " - enumeração ativa de terminal")
     println("")
     println("Uso:")
-    println("  koffuster <modo> [opções]")
+    println("  koffuster <modo> <alvo> <wordlist> [opções]")
     println("  koffuster help <modo>")
     println("")
     println("Modos:")
@@ -79,8 +79,8 @@ Bool printTopHelp() {
     println("")
     println("Resultados vão para stdout; banner, progresso e erros para stderr.")
     println("Exemplos:")
-    println("  koffuster dir -u http://alvo/ -w words.txt")
-    println("  koffuster dns -d exemplo.com -w subs.txt -f jsonl")
+    println("  koffuster dir alvo.com.br words.txt")
+    println("  koffuster dns exemplo.com subs.txt -f jsonl")
     return true
 }
 

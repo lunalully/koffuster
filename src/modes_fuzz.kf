@@ -64,8 +64,14 @@ Bool runFuzzMode(String[] args) {
     var totalOps = 0
     var foundCount = 0
     var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && words.size() >= 50)
+    var lastBucket = -1
 
     var total = words.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
     var idx = 0
     while (idx < total) {
         var count = width
@@ -133,14 +139,22 @@ Bool runFuzzMode(String[] args) {
                 if (decision.startsWith("include")) {
                     foundCount = foundCount + 1
                     var result = FuzzResult(url, status, length, batchWords.get(m))
-                    emitFuzzResult(result, cfg, colorOn)
+                    emitFuzzResult(result, cfg, colorOn, held)
                 }
             }
             m = m + 1
         }
 
         idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
     }
+
+    if (showProgress) {
+        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
 
     var durationMs = time.now() - startMs
     printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
@@ -161,14 +175,14 @@ String fuzzBuildHeaders(String baseHeaders, String word) {
     return baseHeaders.replace("FUZZ", word)
 }
 
-Bool emitFuzzResult(FuzzResult r, Config cfg, Bool colorOn) {
+Bool emitFuzzResult(FuzzResult r, Config cfg, Bool colorOn, List<String> held) {
     var line = ""
     if (cfg.format() == "jsonl") {
         line = formatFuzzJsonl(r)
     } else {
         line = formatFuzzText(r, colorOn, true)
     }
-    println(line)
+    held.add(line)
     if (cfg.output().length() > 0) {
         var fileLine = line
         if (cfg.format() != "jsonl") { fileLine = formatFuzzText(r, false, true) }

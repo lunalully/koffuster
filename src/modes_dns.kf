@@ -85,8 +85,14 @@ Bool runDnsMode(String[] args) {
     var totalOps = 3
     var foundCount = 0
     var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && words.size() >= 50)
+    var lastBucket = -1
 
     var total = words.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
     var idx = 0
     while (idx < total) {
         var count = width
@@ -125,7 +131,7 @@ Bool runDnsMode(String[] args) {
                     } else {
                         foundCount = foundCount + 1
                         var okResult = DnsResult(name, "resolved", ip)
-                        emitDnsResult(okResult, cfg)
+                        emitDnsResult(okResult, cfg, held)
                     }
                 } else if (st == 3) {
                     if (cfg.verbose()) { log.error("nxdomain: " + name) }
@@ -137,7 +143,15 @@ Bool runDnsMode(String[] args) {
         }
 
         idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
     }
+
+    if (showProgress) {
+        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
 
     var durationMs = time.now() - startMs
     printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
@@ -145,14 +159,14 @@ Bool runDnsMode(String[] args) {
     return true
 }
 
-Bool emitDnsResult(DnsResult r, Config cfg) {
+Bool emitDnsResult(DnsResult r, Config cfg, List<String> held) {
     var line = ""
     if (cfg.format() == "jsonl") {
         line = formatDnsJsonl(r)
     } else {
         line = formatDnsText(r)
     }
-    println(line)
+    held.add(line)
     if (cfg.output().length() > 0) {
         var fileLine = line
         if (cfg.format() != "jsonl") { fileLine = formatDnsText(r) }

@@ -97,12 +97,21 @@ Ordem de escolha do runtime: `$KOFFUSTER_KOF_JAR` (jar staged, para testes)
 ## Como executar
 
 ```
-koffuster <modo> [opções]
+koffuster <modo> <alvo> <wordlist> [opções]
+koffuster <modo> -u/-d <alvo> -w <wordlist> [opções]   # forma clássica
 koffuster --help | -h
 koffuster --version
 koffuster help <modo>
 koffuster <modo> --help
 ```
+
+Na forma curta, os posicionais preenchem os campos vazios na ordem do modo:
+`dir`/`vhost` → `<url> <wordlist>`; `dns` → `<domínio> <wordlist>`;
+`fuzz` → `<url-com-FUZZ> <wordlist>`; `s3`/`gcs` → `<wordlist>`;
+`tftp` → `<servidor> <wordlist>`. Em `dir`/`vhost`/`fuzz`, uma url sem
+esquema vira `https://` (para `http://`, digite o esquema). Os atalhos
+`-u/--url`, `-d/--domain` e `-w/--wordlist` continuam aceitos e podem ser
+misturados com posicionais.
 
 Modos: `dir dns vhost fuzz s3 gcs tftp`.
 
@@ -110,25 +119,25 @@ Modos: `dir dns vhost fuzz s3 gcs tftp`.
 
 ```bash
 # dir — força bruta de diretórios/arquivos
-koffuster dir -u http://alvo/ -w wordlist.txt -x php,html -t 16 -s 200,301
+koffuster dir alvo.com.br wordlist.txt -x php,html -t 16 -s 200,301
 
 # dns — subdomínios via DNS-over-HTTPS
-koffuster dns -d exemplo.com -w subdominios.txt --resolver https://dns.google/resolve
+koffuster dns exemplo.com subdominios.txt --resolver https://dns.google/resolve
 
 # vhost — virtual hosts variando o cabeçalho Host
-koffuster vhost -u http://10.0.0.5/ -w hosts.txt --domain exemplo.com
+koffuster vhost http://10.0.0.5/ hosts.txt --domain exemplo.com
 
 # fuzz — substituição de FUZZ na URL, cabeçalho ou corpo
-koffuster fuzz -u "http://alvo/busca?q=FUZZ" -w payloads.txt -s 200
+koffuster fuzz "alvo.com/busca?q=FUZZ" payloads.txt -s 200
 
 # s3 — existência/permissão de bucket S3 (somente leitura)
-koffuster s3 -w buckets.txt
+koffuster s3 buckets.txt
 
 # gcs — mesma ideia, endpoint do Google Cloud Storage
-koffuster gcs -w buckets.txt --endpoint "https://storage.googleapis.com/%s/"
+koffuster gcs buckets.txt --endpoint "https://storage.googleapis.com/%s/"
 
 # tftp — registrado, mas sempre recusa rodar (veja Limitações)
-koffuster tftp --server 10.0.0.9 --port 69 -w arquivos.txt
+koffuster tftp 10.0.0.9 arquivos.txt --port 69
 ```
 
 Todo exemplo acima é aceito literalmente pelo parser — não são pseudo-código.
@@ -148,6 +157,9 @@ Todo exemplo acima é aceito literalmente pelo parser — não são pseudo-códi
 
 ### Comuns a todos os modos ativos (dir/dns/vhost/fuzz/s3/gcs)
 
+Na forma curta (posicional), `<alvo>` e `<wordlist>` vêm direto na linha de
+comando; as flags abaixo continuam equivalentes.
+
 | Opção | Significado | Padrão |
 |---|---|---|
 | `-w, --wordlist <arquivo\|->` | wordlist, ou `-` para stdin | obrigatório |
@@ -156,7 +168,7 @@ Todo exemplo acima é aceito literalmente pelo parser — não são pseudo-códi
 | `-o, --output <arquivo>` | grava resultados também em arquivo (append+flush) | só stdout |
 | `-f, --format <text\|jsonl>` | formato de saída | text |
 | `--proxy <url>` | proxy HTTP, mapeado pelo launcher para a JVM | — |
-| `-q, --quiet` | sem banner/progresso, só resultados | off |
+| `-q, --quiet`, `-silent/--silent` | sem banner/progresso/resumo, só resultados | off |
 | `--color` | força cores ANSI (padrão: desligadas) | off |
 | `-v, --verbose` | ecoa a configuração efetiva (segredos redigidos) no stderr | off |
 
@@ -193,9 +205,11 @@ Filtros do dir/fuzz: `-s/--status` (se dado) desliga a exclusão padrão de
 
 ## Formatos de saída
 
-- **Resultados sempre vão para stdout.** Banner, progresso e resumo final
-  vão para stderr — `koffuster dir ... 2>/dev/null` numa pipeline só entrega
-  as linhas de resultado.
+- **Resultados sempre vão para stdout — e só no final.** Durante a varredura
+  o terminal mostra banner/progresso (em stderr); a lista completa sai de
+  uma vez quando o scan chega a 100%. Banner, progresso e resumo final vão
+  para stderr — `koffuster dir ... 2>/dev/null` numa pipeline só entrega as
+  linhas de resultado.
 - **Texto** (padrão): colunas alinhadas, ex. `200   1234    /admin`.
 - **JSONL** (`-f jsonl`): uma linha JSON por resultado no stdout, sem
   banner/cores/progresso misturados — cada linha é `json.loads`-ável
@@ -203,19 +217,22 @@ Filtros do dir/fuzz: `-s/--status` (se dado) desliga a exclusão padrão de
 - **Cores**: desligadas por padrão (sem detecção confiável de TTY na build
   do KOF). `--color` força ligar; `NO_COLOR`, `-q` e `-f jsonl` forçam
   desligar.
-- **`-o/--output <arquivo>`**: cada resultado é gravado (append) e
-  imediatamente `flush`ado assim que é produzido — os resultados sobrevivem
-  a um `Ctrl+C` no meio da execução.
+- **`-o/--output <arquivo>`**: cada resultado é gravado no arquivo (append)
+  e imediatamente `flush`ado assim que é produzido — ao contrário do
+  terminal (que só mostra a lista no final), o arquivo acompanha o scan em
+  tempo real e sobrevive a um `Ctrl+C` no meio da execução.
 
 ---
 
 ## Banner
 
-O banner vem de um arquivo `banner.txt` separado na raiz do projeto. Se ele
-estiver vazio ou não existir, Koffuster imprime apenas a palavra
-`Koffuster`. **Este projeto não inventa arte ASCII** — o conteúdo exato do
-banner precisa ser colado como texto puro por quem o mantém, preservando os
-bytes exatamente como fornecidos.
+O banner é a arte ASCII mantida em `banner.txt`, na raiz do projeto (hoje
+"KOFFUSTER" no font Sub-Zero). O launcher exporta `KOFFUSTER_BANNER`
+apontando para esse arquivo, então a arte aparece rodando de qualquer
+diretório — não é preciso colar arte no código. Se o arquivo estiver vazio
+ou não existir, Koffuster imprime apenas a palavra `Koffuster`. Para trocar
+a arte, substitua `banner.txt` preservando os bytes como fornecidos (a
+variável `KOFFUSTER_BANNER` também pode apontar para outro arquivo).
 
 ---
 
@@ -224,6 +241,14 @@ bytes exatamente como fornecidos.
 - **"Picked up JDK_JAVA_OPTIONS..." no stderr**: já filtrado pelo launcher.
   Se você rodar o runtime KOF diretamente, essas linhas voltam — é a JVM
   avisando, não um erro do Koffuster.
+- **A varredura parece travada**: de 50 candidatos em diante, cada modo
+  ativo imprime uma barra de progresso de 0 a 100% no stderr (a cada faixa
+  de 5%, com o placar de resultados). `-q`/`-silent` desligam. Os corpos dos
+  candidatos são buscados em paralelo, na mesma concorrência de `-t`.
+- **"0 results" num alvo que responde igual para qualquer path**: é
+  soft-404/catch-all (comum em SPA) e o modo `dir` avisa no stderr; os
+  candidatos idênticos ao baseline são filtrados por design — use
+  `-s <status>` (ex.: `-s 200`) para vê-los.
 - **Timeouts (`timeout` nos resultados)**: aumente `--timeout` se o alvo for
   lento, ou reduza `-t/--threads` para não saturar rede/alvo.
 - **Conexão recusada (`refused`)**: porta fechada ou alvo fora do ar;
@@ -275,7 +300,7 @@ koffuster/
 │   ├── sched.kf         # concorrência com spawn dinâmico (KOF 0.5.0)
 │   ├── classify.kf      # baseline soft-404, filtros, helpers DoH
 │   ├── httpx.kf         # headers e classificação de erro HTTP
-│   ├── output.kf        # formatação text/JSONL, banner, resumo
+│   ├── output.kf        # formatação text/JSONL, banner, progresso, resumo
 │   ├── wordlist.kf      # leitura de wordlist + expansão de extensões
 │   ├── util_str.kf      # percent-encoding, base64, ranges, redação
 │   ├── modes_dir.kf     # dir
@@ -286,6 +311,6 @@ koffuster/
 │   └── modes_tftp.kf    # tftp (recusa honesta)
 ├── docs/                # documentação técnica (arquitetura, relatórios)
 ├── labs/                # laboratórios locais de teste (HTTP/UDP/DoH)
-├── banner.txt           # arte ASCII do banner (placeholder até receber o texto real)
+├── banner.txt           # arte ASCII do banner (KOFFUSTER no font Sub-Zero)
 └── README.md
 ```

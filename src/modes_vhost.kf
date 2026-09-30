@@ -66,8 +66,14 @@ Bool runVhostMode(String[] args) {
     var totalOps = 2
     var foundCount = 0
     var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && words.size() >= 50)
+    var lastBucket = -1
 
     var total = words.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
     var idx = 0
     while (idx < total) {
         var count = width
@@ -104,7 +110,7 @@ Bool runVhostMode(String[] args) {
                     if (baseLen < 0 || st != -1) {
                         foundCount = foundCount + 1
                         var result = VhostResult(host, st, "-", "http5xx")
-                        emitVhostResult(result, cfg, colorOn)
+                        emitVhostResult(result, cfg, colorOn, held)
                     }
                 } else if (isRetryable("ERR:" + err) && cfg.retries() > 0) {
                     var retried = bodyWithHeaders(cfg.url(), batchHdrs.get(m))
@@ -137,17 +143,25 @@ Bool runVhostMode(String[] args) {
             if (baseLen >= 0 && len != baseLen) {
                 foundCount = foundCount + 1
                 var result = VhostResult(host, 200, "" + len, "")
-                emitVhostResult(result, cfg, colorOn)
+                emitVhostResult(result, cfg, colorOn, held)
             } else if (baseLen < 0 && len > 0) {
                 foundCount = foundCount + 1
                 var result = VhostResult(host, 200, "" + len, "no-baseline")
-                emitVhostResult(result, cfg, colorOn)
+                emitVhostResult(result, cfg, colorOn, held)
             }
             m = m + 1
         }
 
         idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
     }
+
+    if (showProgress) {
+        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
 
     var durationMs = time.now() - startMs
     printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
@@ -155,14 +169,14 @@ Bool runVhostMode(String[] args) {
     return true
 }
 
-Bool emitVhostResult(VhostResult r, Config cfg, Bool colorOn) {
+Bool emitVhostResult(VhostResult r, Config cfg, Bool colorOn, List<String> held) {
     var line = ""
     if (cfg.format() == "jsonl") {
         line = formatVhostJsonl(r)
     } else {
         line = formatVhostText(r, colorOn)
     }
-    println(line)
+    held.add(line)
     if (cfg.output().length() > 0) {
         var fileLine = line
         if (cfg.format() != "jsonl") { fileLine = formatVhostText(r, false) }
