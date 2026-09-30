@@ -1,0 +1,119 @@
+// modes_store.kf - s3 and gcs modes: read-only bucket existence/permission
+// checks. No custom headers are ever needed, so this uses the plain status
+// probe (exact codes for every status, cookbook P1a) - never GET, never
+// write.
+
+import kof.process
+
+Bool runS3Mode(String[] args) {
+    return runStoreMode(args, "s3", "http://%s.s3.amazonaws.com/")
+}
+
+Bool runGcsMode(String[] args) {
+    return runStoreMode(args, "gcs", "https://storage.googleapis.com/%s/")
+}
+
+Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
+    var cfg = parseModeArgs(args, 1, modeName)
+
+    if (cfg.help()) {
+        println(storeHelpText(modeName, defaultEndpoint))
+        return true
+    }
+    if (cfg.valid() == false) {
+        log.error("koffuster " + modeName + ": " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    var endpoint = defaultEndpoint
+    if (cfg.endpoint().length() > 0) { endpoint = cfg.endpoint() }
+
+    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    if (cfg.verbose()) { log.error(configEcho(cfg)) }
+
+    http.timeout(cfg.timeoutSec())
+    var startMs = time.now()
+
+    var buckets = loadWordlist(cfg.wordlist())
+    if (cfg.quiet() == false) {
+        log.error("koffuster " + modeName + ": " + buckets.size() + " candidates, endpoint " + redactUrl(endpoint))
+    }
+
+    var width = snapThreads(cfg.threads())
+    var totalOps = 0
+    var foundCount = 0
+    var errorCount = 0
+
+    var total = buckets.size()
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        var batchBuckets = listOf<String>()
+        var batchUrls = listOf<String>()
+        var j = 0
+        while (j < count) {
+            var bucket = buckets.get(idx + j)
+            batchBuckets.add(bucket)
+            batchUrls.add(bucketUrl(endpoint, bucket))
+            j = j + 1
+        }
+
+        var statusResults = runStatusBatch(width, batchUrls, count)
+        totalOps = totalOps + count
+
+        var m = 0
+        while (m < count) {
+            var raw = statusResults.get(m)
+            var url = batchUrls.get(m)
+            var bucket = batchBuckets.get(m)
+            var status = 0
+            var state = "inconclusive"
+            if (raw.startsWith("ERR:")) {
+                errorCount = errorCount + 1
+                if (cfg.verbose()) { log.error("error: " + redactUrl(url) + " -> " + raw.substring(4)) }
+            } else {
+                status = raw.toInt()
+                if (status == 404) { state = "absent" }
+                else if (status == 403) { state = "exists_denied" }
+                else if (status == 200) { state = "public" }
+                else { state = "inconclusive" }
+            }
+            if (state != "absent") {
+                foundCount = foundCount + 1
+                var result = StoreResult(bucket, url, status, state)
+                emitStoreResult(result, cfg)
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+    }
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount - errorCount, errorCount)
+    return true
+}
+
+String bucketUrl(String endpointTemplate, String bucket) {
+    return endpointTemplate.replace("%s", bucket)
+}
+
+Bool emitStoreResult(StoreResult r, Config cfg) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatStoreJsonl(r)
+    } else {
+        line = formatStoreText(r)
+    }
+    println(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") { fileLine = formatStoreText(r) }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
+}

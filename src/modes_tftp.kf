@@ -1,0 +1,43 @@
+// modes_tftp.kf - tftp mode: a registered mode with full --help that
+// honestly refuses to run, rather than faking a result.
+//
+// Demonstrated blocker on two independent paths (docs/impl-notes.md,
+// docs/requirements-matrix.md):
+//   1. libc/FFI (socket/sendto/recvfrom): KOF 0.2.6-beta has no extern/FFI
+//      mechanism at all - the `extern` keyword itself fails to parse, so
+//      there is no way to call out to libc, confirmed by a dedicated
+//      TFTP/UDP FFI spike (see impl-notes.md).
+//   2. Pure-Java DatagramSocket/DatagramPacket: both require a byte[]
+//      payload (TFTP is opcode+filename+mode for an RRQ, opcode+block#+
+//      data for DATA), and `String.getBytes()` - the only candidate path
+//      on this build to turn a String into a byte[] - crashes the runtime
+//      with `NoClassDefFoundError` (cookbook P8), independent of
+//      networking entirely.
+// With neither path available, no TFTP packet, request or response, can
+// be built or parsed on this build at all. TFTP is known to become
+// implementable once FFI lands (KOF 0.5.0-beta+). Recorded as a real,
+// demonstrated limitation, not a stub for appearance.
+
+import kof.process
+
+Bool runTftpMode(String[] args) {
+    var cfg = parseModeArgs(args, 1, "tftp")
+
+    if (cfg.help()) {
+        println(tftpHelpText())
+        return true
+    }
+    if (cfg.valid() == false) {
+        // tftp has no required-option validation in parseModeArgs (its
+        // only two inputs, --server/-w, are both optional at the parser
+        // level since the mode refuses to run regardless) - this branch
+        // only fires on a genuinely unknown/malformed option.
+        log.error("koffuster tftp: " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    log.error("koffuster tftp: tftp/UDP is not supported on this KOF build: 0.2.6-beta has no extern/FFI mechanism (the 'extern' keyword fails to parse - see docs/impl-notes.md) and String.getBytes()/any byte[]-returning call crashes with NoClassDefFoundError, so no TFTP packet can be built by either path. Would need KOF 0.5.0-beta+ (FFI). Not implemented.")
+    process.exit(3)
+    return false
+}

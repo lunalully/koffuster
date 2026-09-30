@@ -1,0 +1,237 @@
+// modes_dir.kf - the `dir` mode driver.
+
+import kof.process
+
+Bool runDirMode(String[] args) {
+    var cfg = parseDirArgs(args, 1)
+
+    if (cfg.help()) {
+        println(dirHelpText())
+        return true
+    }
+    if (cfg.valid() == false) {
+        log.error("koffuster dir: " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    var noColorEnv = envIsSet("NO_COLOR")
+    var colorOn = colorsEnabled(cfg.color(), cfg.noColor(), cfg.quiet(), cfg.format(), noColorEnv)
+
+    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    if (cfg.verbose()) {
+        log.error(configEcho(cfg))
+    }
+
+    // -- assemble the shared header string used by body-length probes ----
+    // (http.status cannot carry headers at all on this build - see
+    // sched.kf's note - so this only ever reaches the body-length pass.)
+    var authHeader = ""
+    if (cfg.auth().length() > 0) {
+        authHeader = "Basic " + base64Encode(cfg.auth())
+    }
+    var hdrs = buildHeaders(cfg.userAgent(), cfg.headers(), cfg.cookie(), authHeader)
+    writeHeadersFile(hdrs)
+    // Headerless mode: no -H/--cookie/--auth given. The ONE-argument
+    // http.get(url) never throws on any status (cookbook P1a) - only the
+    // two-argument, header-bearing form throws on non-2xx (impl-notes.md)
+    // - so when there is nothing custom to send, every candidate (not just
+    // ones needed for a filter decision) gets a real body length, 2xx or
+    // not, via runBodyLenBatchNoHdr instead of runBodyLenBatch.
+    var headerless = cfg.headers().size() == 0 && cfg.cookie().length() == 0 && cfg.auth().length() == 0
+
+    http.timeout(cfg.timeoutSec())
+
+    var startMs = time.now()
+
+    // -- wordlist + candidate URLs ----------------------------------------
+    var rawWords = loadWordlist(cfg.wordlist())
+    var exts = parseExtensions(cfg.extensions())
+    var words = expandExtensions(rawWords, exts)
+
+    if (cfg.quiet() == false) {
+        log.error("koffuster dir: " + words.size() + " candidates, target " + redactUrl(cfg.url()))
+    }
+
+    // -- control probes / soft-404 baseline --------------------------------
+    var needLength = cfg.excludeLength().length() > 0
+    var baseline = buildBaseline(cfg.url(), true)
+
+    var width = snapThreads(cfg.threads())
+    if (cfg.verbose()) {
+        log.error("koffuster dir: threads snapped to " + width + " (requested " + cfg.threads() + ")")
+        if (baseline.softDetected()) {
+            log.error("koffuster dir: soft-404 baseline status=" + baseline.status() + " length=" + baseline.length())
+        } else {
+            log.error("koffuster dir: no consistent soft-404 baseline detected")
+        }
+    }
+
+    var totalOps = 2
+    var foundCount = 0
+    var errorCount = 0
+    var lastOpMs = time.now()
+
+    var total = words.size()
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        // Global --rate pacing: a single shared gate covering every
+        // operation (control probes above, retries, and this batch's
+        // requests alike). Approximated at the batch level: sleep so
+        // batches are spaced by roughly count/rate seconds. --delay is a
+        // different, additional per-batch pause (there are no persistent
+        // "worker" threads across batches on this build to apply a true
+        // per-worker delay to, so --delay is applied once per batch here,
+        // documented as an approximation in the requirements matrix).
+        if (cfg.rate() > 0) {
+            var minGapMs = (count * 1000) / cfg.rate()
+            var elapsed = time.now() - lastOpMs
+            if (elapsed < minGapMs) {
+                // time.sleep wants an Int; elapsed/minGapMs math involves
+                // time.now()'s Long, and Long.toInt() crashes codegen on
+                // this build, so round-trip through String (proven safe -
+                // docs/impl-notes.md) to get an Int sleep argument.
+                var gapStr = "" + (minGapMs - elapsed)
+                time.sleep(gapStr.toInt())
+            }
+        }
+        if (cfg.delayMs() > 0) {
+            time.sleep(cfg.delayMs())
+        }
+        lastOpMs = time.now()
+
+        var batchUrls = listOf<String>()
+        var j = 0
+        while (j < count) {
+            batchUrls.add(joinDirUrl(cfg.url(), words.get(idx + j)))
+            j = j + 1
+        }
+
+        var statusResults = runStatusBatch(width, batchUrls, count)
+        totalOps = totalOps + count
+
+        // Figure out which candidates in this batch need a body-length
+        // probe: only ones whose status matches the soft-404 baseline (to
+        // confirm/refute it) or, if --exclude-length is set, any
+        // surviving (non-404-by-default, non-explicitly-excluded) status -
+        // never every candidate, per architecture.md section 7's
+        // "minimize requests" rule.
+        var lenNeededUrls = listOf<String>()
+        var lenNeededIdx = listOf<String>()
+        var k = 0
+        while (k < count) {
+            var raw = statusResults.get(k)
+            if (raw.startsWith("ERR:") == false) {
+                var st = raw.toInt()
+                var wantsLen = false
+                if (headerless) {
+                    // Free and safe for any status on this path - show
+                    // real sizes everywhere, per the shared refinement.
+                    wantsLen = true
+                }
+                if (baseline.softDetected() && st == baseline.status()) { wantsLen = true }
+                if (needLength && st != 404) { wantsLen = true }
+                if (wantsLen) {
+                    lenNeededUrls.add(batchUrls.get(k))
+                    lenNeededIdx.add("" + k)
+                }
+            }
+            k = k + 1
+        }
+
+        var lengths = listOf<String>()
+        if (lenNeededUrls.size() > 0) {
+            var lenWidth = widthForCount(lenNeededUrls.size())
+            if (headerless) {
+                lengths = runBodyLenBatchNoHdr(lenWidth, lenNeededUrls, lenNeededUrls.size())
+            } else {
+                lengths = runBodyLenBatch(lenWidth, lenNeededUrls, lenNeededUrls.size())
+            }
+            totalOps = totalOps + lenNeededUrls.size()
+        }
+
+        // Merge status + (optional) length results and apply filters/retries.
+        var m = 0
+        while (m < count) {
+            var raw = statusResults.get(m)
+            var url = batchUrls.get(m)
+
+            if (raw.startsWith("ERR:")) {
+                var reason = raw.substring(4)
+                if ((reason == "refused" || reason == "timeout") && cfg.retries() > 0) {
+                    var retried = statusWithRetries(url, cfg.retries())
+                    if (retried.startsWith("ERR:") == false) {
+                        raw = retried
+                    } else {
+                        errorCount = errorCount + 1
+                        if (cfg.verbose()) {
+                            log.error("error: " + redactUrl(url) + " -> " + retried.substring(4))
+                        }
+                        m = m + 1
+                        continue
+                    }
+                } else {
+                    errorCount = errorCount + 1
+                    if (cfg.verbose()) {
+                        log.error("error: " + redactUrl(url) + " -> " + reason)
+                    }
+                    m = m + 1
+                    continue
+                }
+            }
+
+            var status = raw.toInt()
+            var length = -1
+            var lengthDisplay = "-"
+            var lp = 0
+            while (lp < lenNeededIdx.size()) {
+                if (lenNeededIdx.get(lp) == ("" + m)) {
+                    var lraw = lengths.get(lp)
+                    lengthDisplay = lenOrDash(lraw)
+                    if (lraw.startsWith("ERR:") == false) {
+                        length = lraw.toInt()
+                    }
+                }
+                lp = lp + 1
+            }
+
+            var decision = decideResult(status, length, baseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
+            if (decision.startsWith("include")) {
+                var note = ""
+                if (decision.contains(":inconclusive")) { note = "inconclusive" }
+                var result = DirResult(url, status, lengthDisplay, note)
+                foundCount = foundCount + 1
+                emitResult(result, cfg, colorOn)
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+    }
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount, errorCount)
+    return true
+}
+
+Bool emitResult(DirResult r, Config cfg, Bool colorOn) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatJsonl(r)
+    } else {
+        line = formatText(r, colorOn)
+    }
+    println(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") {
+            fileLine = formatText(r, false)
+        }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
+}

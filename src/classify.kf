@@ -1,0 +1,197 @@
+// classify.kf - URL construction for dir, control/soft-404 detection, and
+// the filter engine (architecture.md sections 6 and 7).
+
+record Baseline(Bool softDetected, Int status, Int length)
+
+// Joins a base URL (which may already have a path and/or "?query") with a
+// candidate word as one more path segment, without producing "//" and
+// preserving both the base's trailing-slash intent and its query string.
+String joinDirUrl(String baseUrl, String word) {
+    var path = baseUrl
+    var query = ""
+    var qIdx = baseUrl.indexOf("?")
+    if (qIdx >= 0) {
+        path = baseUrl.substring(0, qIdx)
+        query = baseUrl.substring(qIdx)
+    }
+    var joined = ""
+    if (path.endsWith("/")) {
+        joined = path + word
+    } else {
+        joined = path + "/" + word
+    }
+    return joined + query
+}
+
+// A short, non-dictionary-looking path built from the current clock plus a
+// salt, used only for control/soft-404 probes. `random.*` does not resolve
+// on this build (cookbook cross-cutting note), so this is a documented,
+// deterministic-but-unpredictable-enough substitute - good enough for its
+// one job (avoid colliding with a real path in the target's wordlist),
+// not a cryptographic requirement.
+String controlToken(Int salt) {
+    // time.now() is a Long; mixing it directly with bitwise/large-constant
+    // Int math triggered an internal compiler frame-crash (COMP002) on
+    // this build, so the Long is narrowed to a safe Int first via the
+    // proven String round-trip (see docs/impl-notes.md), then all further
+    // arithmetic stays plain Int.
+    var nowStr = "" + time.now()
+    var tail = nowStr
+    if (tail.length() > 8) {
+        tail = tail.substring(tail.length() - 8)
+    }
+    var n = tail.toInt()
+    var mixed = (n + (salt * 7919)) % 100000000
+    if (mixed < 0) { mixed = 0 - mixed }
+    return "kfctl" + mixed
+}
+
+// Runs a small number of control probes against random unlikely paths and
+// derives a soft-404 baseline. Per architecture.md section 6: agreement on
+// BOTH status and length is required before treating a status as a
+// soft-404 signature; a status-only or length-only agreement is not
+// treated as a soft-404 baseline (mismatches just mean "no consistent
+// signature", not an error).
+Baseline buildBaseline(String baseUrl, Bool needLength) {
+    var u1 = joinDirUrl(baseUrl, controlToken(17))
+    var u2 = joinDirUrl(baseUrl, controlToken(9001))
+    var r1 = statusWithRetries(u1, 1)
+    var r2 = statusWithRetries(u2, 1)
+    if (r1.startsWith("ERR:") || r2.startsWith("ERR:")) {
+        return Baseline(false, -1, -1)
+    }
+    var s1 = r1.toInt()
+    var s2 = r2.toInt()
+    if (s1 != s2) {
+        return Baseline(false, -1, -1)
+    }
+    if (needLength == false) {
+        return Baseline(true, s1, -1)
+    }
+    var b1 = bodyLenOnce(u1)
+    var b2 = bodyLenOnce(u2)
+    if (b1.startsWith("ERR:") || b2.startsWith("ERR:")) {
+        // Status agreed but body couldn't be read consistently - keep the
+        // status-only signature rather than discarding it.
+        return Baseline(true, s1, -1)
+    }
+    var l1 = b1.toInt()
+    var l2 = b2.toInt()
+    if (l1 == l2) {
+        return Baseline(true, s1, l1)
+    }
+    // Status agrees but length doesn't - an inconsistent signature. Do not
+    // silently treat this as "no soft-404" either; keep the status-only
+    // baseline so obviously-matching statuses are still filtered, and let
+    // per-candidate comparison mark ambiguous (status matches, length
+    // differs) cases "inconclusive" rather than dropping them.
+    return Baseline(true, s1, -1)
+}
+
+// Filter decision for one candidate. Returns "include:<note>" or
+// "exclude" - a single string to avoid needing a multi-field return type
+// through code paths that already pass plenty of parameters around.
+// note is "" for a normal hit or "inconclusive" per architecture.md
+// section 6.
+// -- dns helpers -----------------------------------------------------
+record DohStatusOnly(Int Status)
+
+// Builds the DoH JSON query URL: <resolver>?name=<name>&type=A.
+String dohQueryUrl(String resolver, String name) {
+    var sep = "?"
+    if (resolver.contains("?")) { sep = "&" }
+    return resolver + sep + "name=" + percentEncode(name) + "&type=A"
+}
+
+// json.decode<Record>(body) only reliably works for a flat record
+// (cookbook P3/P6 - nested List<Record> fields are broken), so this reads
+// just the Status field that way.
+Int dohStatusOf(String body) {
+    try {
+        var d = json.decode<DohStatusOnly>(body)
+        return d.Status()
+    } catch (String e) {
+        return -1
+    }
+}
+
+// Nested Answer[].data decode is broken (cookbook P6's proven
+// ClassCastException) - scrape the first "data" value via indexOf/
+// substring instead, exactly per the cookbook's documented fallback.
+String dohFirstIp(String body) {
+    var key = "\"data\""
+    var i = body.indexOf(key)
+    if (i < 0) { return "" }
+    var colon = body.indexOf(":", i)
+    if (colon < 0) { return "" }
+    var firstQuote = body.indexOf("\"", colon)
+    if (firstQuote < 0) { return "" }
+    var secondQuote = body.indexOf("\"", firstQuote + 1)
+    if (secondQuote < 0) { return "" }
+    return body.substring(firstQuote + 1, secondQuote)
+}
+
+// Deterministic, clock-derived "random" subdomain label for wildcard
+// probes - see classify.controlToken's note: random.* does not resolve
+// on this build, this is a documented, good-enough substitute for
+// avoiding an accidental collision with a real subdomain, not a security
+// property.
+String dnsControlToken(Int salt) {
+    return controlToken(salt + 424242)
+}
+
+String decideResult(Int status, Int length, Baseline baseline, String includeSpec, String excludeStatusSpec, String excludeLengthSpec) {
+    var eligible = true
+    var note = ""
+
+    if (includeSpec.length() > 0) {
+        // Explicit --status whitelist: only listed statuses are eligible,
+        // and this DISABLES the default 404 exclusion (architecture.md
+        // section 6, item 1) - no silent conflict between "include 404"
+        // and "exclude 404 by default".
+        eligible = inRangeList(includeSpec, status)
+    } else {
+        // Default blacklist: 404, plus the soft-404 signature if one was
+        // detected.
+        if (status == 404) {
+            eligible = false
+        }
+        if (eligible && baseline.softDetected() && status == baseline.status()) {
+            if (baseline.length() >= 0) {
+                if (length == baseline.length()) {
+                    eligible = false
+                } else {
+                    // Status matches the soft-404 signature but length
+                    // does not - ambiguous. Keep it, but say so.
+                    note = "inconclusive"
+                }
+            } else {
+                // We only have a status-only signature (length unknown or
+                // inconsistent) - status agreement alone is treated as a
+                // match for the default blacklist, since architecture.md
+                // requires status agreement as the baseline for exclusion
+                // and this is exactly that case with no better data.
+                eligible = false
+            }
+        }
+    }
+
+    // --exclude-status always applies after the include decision.
+    if (eligible && excludeStatusSpec.length() > 0) {
+        if (inRangeList(excludeStatusSpec, status)) {
+            eligible = false
+        }
+    }
+    // --exclude-length applies last.
+    if (eligible && excludeLengthSpec.length() > 0) {
+        if (inRangeList(excludeLengthSpec, length)) {
+            eligible = false
+        }
+    }
+
+    if (eligible) {
+        if (note.length() > 0) { return "include:" + note }
+        return "include:"
+    }
+    return "exclude"
+}

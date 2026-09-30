@@ -1,0 +1,160 @@
+// util_str.kf - small pure-KOF string/number helpers.
+//
+// Numbers: NEVER build a display string with `"literal" + someDouble` - on
+// this build that silently drops the value (proven: `"x=" + 3.14` prints
+// "x=" with nothing after it). Koffuster never uses Double for anything
+// displayed; durations are tracked as Int milliseconds via time.now()
+// (also proven safe), and Int concatenation ("" + someInt) works correctly
+// everywhere, so intToStr below is a thin, explicit wrapper rather than a
+// real workaround - it exists so call sites read as intentional formatting,
+// not an accidental raw "+".
+String intToStr(Int n) {
+    return "" + n
+}
+
+// Percent-encodes a string for safe use inside a URL path/query segment.
+// `net.*`/`encoding.*` do not resolve on this build (cookbook P3), and
+// java.net.URLEncoder interop is not reliably usable either, so this is a
+// hand-rolled RFC 3986 "unreserved characters" encoder using only proven
+// String/Int primitives (charAt returns the UTF-16 code unit as an Int,
+// confirmed in the cookbook).
+String percentEncode(String s) {
+    var out = ""
+    var i = 0
+    while (i < s.length()) {
+        var c = s.charAt(i)
+        var isUnreserved = false
+        if (c >= 65 && c <= 90) { isUnreserved = true }   // A-Z
+        if (c >= 97 && c <= 122) { isUnreserved = true }  // a-z
+        if (c >= 48 && c <= 57) { isUnreserved = true }   // 0-9
+        if (c == 45 || c == 46 || c == 95 || c == 126) { isUnreserved = true } // - . _ ~
+        if (isUnreserved) {
+            out = out + s.substring(i, i + 1)
+        } else {
+            out = out + "%" + hexByte(c)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+String hexByte(Int code) {
+    var hi = (code >> 4) & 15
+    var lo = code & 15
+    return hexDigit(hi) + hexDigit(lo)
+}
+
+String hexDigit(Int d) {
+    if (d < 10) { return "" + d }
+    if (d == 10) { return "A" }
+    if (d == 11) { return "B" }
+    if (d == 12) { return "C" }
+    if (d == 13) { return "D" }
+    if (d == 14) { return "E" }
+    return "F"
+}
+
+// Standard base64 (RFC 4648) alphabet.
+String b64Char(Int v) {
+    var alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    return alphabet.substring(v, v + 1)
+}
+
+// Hand-rolled base64 encode. `java.util.Base64` does not resolve on this
+// build (cookbook P3) and `String.getBytes()` crashes the runtime with a
+// NoClassDefFoundError (cookbook P8), so this works directly off
+// `charAt(i)` (proven to return the UTF-16 code unit as an Int) treating
+// each character as one byte - correct for the ASCII `user:pass` Basic-Auth
+// strings this is used for; not a general UTF-8 byte encoder.
+String base64Encode(String s) {
+    var out = ""
+    var i = 0
+    var n = s.length()
+    while (i < n) {
+        var b0 = s.charAt(i) & 255
+        var have1 = false
+        var have2 = false
+        var b1 = 0
+        var b2 = 0
+        if (i + 1 < n) { b1 = s.charAt(i + 1) & 255; have1 = true }
+        if (i + 2 < n) { b2 = s.charAt(i + 2) & 255; have2 = true }
+
+        var c0 = (b0 >> 2) & 63
+        var c1 = ((b0 & 3) << 4) | ((b1 >> 4) & 15)
+        var c2 = ((b1 & 15) << 2) | ((b2 >> 6) & 3)
+        var c3 = b2 & 63
+
+        out = out + b64Char(c0)
+        out = out + b64Char(c1)
+        if (have1) { out = out + b64Char(c2) } else { out = out + "=" }
+        if (have2) { out = out + b64Char(c3) } else { out = out + "=" }
+        i = i + 3
+    }
+    return out
+}
+
+// Parses a comma-separated list of Ints and/or "a-b" ranges (e.g.
+// "0,100-200,404") and reports whether `value` matches any entry. Parses
+// the spec fresh each call rather than pre-building a structure - simple
+// and fast enough for wordlist-sized candidate counts, and avoids ever
+// needing a reference-typed array (`new T[n]` is broken on this build -
+// see docs/impl-notes.md).
+Bool inRangeList(String spec, Int value) {
+    if (spec.length() == 0) { return false }
+    var parts = spec.split(",")
+    var i = 0
+    while (i < parts.length) {
+        var token = parts[i].trim()
+        if (token.length() > 0) {
+            var dash = token.indexOf("-")
+            if (dash > 0) {
+                var loStr = token.substring(0, dash)
+                var hiStr = token.substring(dash + 1)
+                var matched = false
+                try {
+                    var lo = loStr.toInt()
+                    var hi = hiStr.toInt()
+                    if (value >= lo && value <= hi) { matched = true }
+                } catch (String e) {
+                    matched = false
+                }
+                if (matched) { return true }
+            } else {
+                var matched2 = false
+                try {
+                    var exact = token.toInt()
+                    if (value == exact) { matched2 = true }
+                } catch (String e) {
+                    matched2 = false
+                }
+                if (matched2) { return true }
+            }
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Safe int parse with a fallback, for CLI option values.
+Int toIntOr(String s, Int fallback) {
+    try {
+        return s.toInt()
+    } catch (String e) {
+        return fallback
+    }
+}
+
+// Strips "user:pass@" userinfo from a URL for any stderr/log display, so
+// credentials embedded in -u/--resolver/--endpoint never reach the log.
+String redactUrl(String u) {
+    var s = u.indexOf("://")
+    if (s < 0) { return u }
+    var rest = s + 3
+    var slash = u.indexOf("/", rest)
+    var authEnd = u.length()
+    if (slash >= 0) { authEnd = slash }
+    var at = u.lastIndexOf("@")
+    if (at < rest) { return u }
+    if (at >= authEnd) { return u }
+    return u.substring(0, rest) + "<redacted>@" + u.substring(at + 1)
+}

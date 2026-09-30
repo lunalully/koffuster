@@ -1,0 +1,79 @@
+// wordlist.kf - load a wordlist file (or stdin) and expand extensions for
+// dir mode.
+//
+// No line-streaming API exists on this build (cookbook P4) - the whole
+// file (or the whole of /dev/stdin) is read into one String, then split on
+// "\n". This is a real memory tradeoff for very large wordlists, disclosed
+// in the README/requirements matrix, not something a chunked reader could
+// avoid here.
+
+import kof.process
+
+List<String> loadWordlist(String pathOrDash) {
+    var content = ""
+    if (pathOrDash == "-") {
+        content = Path("/dev/stdin").readText()
+    } else {
+        content = Path(pathOrDash).readText()
+    }
+    if (content == null) {
+        log.error("koffuster: cannot read wordlist: " + pathOrDash)
+        process.exit(2)
+        return listOf<String>()
+    }
+    var rawLines = content.split("\n")
+    var out = listOf<String>()
+    var i = 0
+    while (i < rawLines.length) {
+        var line = rawLines[i]
+        // Strip a trailing \r (CRLF wordlists) - this is line-ending
+        // cleanup, not the "don't trim internal spaces" policy below.
+        if (line.endsWith("\r")) {
+            line = line.substring(0, line.length() - 1)
+        }
+        // Default policy: skip blank lines, keep every other line
+        // verbatim (leading/trailing spaces inside a real word are kept,
+        // per architecture.md section 3).
+        if (line.length() > 0) {
+            out.add(line)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Parses a comma-separated extension list ("php,html" or "" for none),
+// trimming each entry and dropping a stray leading dot if the user wrote
+// one (".php" and "php" both work).
+List<String> parseExtensions(String csv) {
+    var out = listOf<String>()
+    if (csv.length() == 0) { return out }
+    var parts = csv.split(",")
+    var i = 0
+    while (i < parts.length) {
+        var e = parts[i].trim()
+        if (e.startsWith(".")) { e = e.substring(1) }
+        if (e.length() > 0) { out.add(e) }
+        i = i + 1
+    }
+    return out
+}
+
+// For each word, emits the word itself plus word.ext for every extension.
+// Order: bare word first, then each extension, per word - so a whole word
+// and all its extension variants stay adjacent for readable progress.
+List<String> expandExtensions(List<String> words, List<String> exts) {
+    var out = listOf<String>()
+    var i = 0
+    while (i < words.size()) {
+        var w = words.get(i)
+        out.add(w)
+        var j = 0
+        while (j < exts.size()) {
+            out.add(w + "." + exts.get(j))
+            j = j + 1
+        }
+        i = i + 1
+    }
+    return out
+}

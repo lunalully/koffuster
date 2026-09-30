@@ -1,0 +1,173 @@
+// modes_dns.kf - the `dns` mode driver: subdomain enumeration via a DoH
+// (DNS-over-HTTPS) JSON resolver. No native DNS/UDP API exists on this
+// build (cookbook P8's getBytes()/byte[] blocker), so "custom resolver"
+// means a custom DoH endpoint, not raw UDP DNS - disclosed in --help.
+
+import kof.process
+
+Bool runDnsMode(String[] args) {
+    var cfg = parseModeArgs(args, 1, "dns")
+
+    if (cfg.help()) {
+        println(dnsHelpText())
+        return true
+    }
+    if (cfg.valid() == false) {
+        log.error("koffuster dns: " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    var noColorEnv = envIsSet("NO_COLOR")
+    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    if (cfg.verbose()) { log.error(configEcho(cfg)) }
+
+    // Every DoH query sends the same constant header - write it once.
+    writeHeadersFile("Accept: application/dns-json")
+    http.timeout(cfg.timeoutSec())
+
+    var startMs = time.now()
+    var words = loadWordlist(cfg.wordlist())
+
+    if (cfg.quiet() == false) {
+        log.error("koffuster dns: " + words.size() + " candidates, domain " + cfg.domain() + ", resolver " + redactUrl(cfg.resolver()))
+    }
+
+    var width = snapThreads(cfg.threads())
+
+    // -- wildcard detection: query N random subdomains; if they ALL
+    // resolve to the same IP, that IP is a wildcard signature and any
+    // candidate resolving to it gets dropped rather than reported.
+    var wildcardIp = ""
+    var wildcardDetected = false
+    var wcTests = cfg.wildcardTests()
+    if (wcTests > 0) {
+        var wcNames = listOf<String>()
+        var wi = 0
+        while (wi < wcTests) {
+            wcNames.add(dnsControlToken(wi) + "." + cfg.domain())
+            wi = wi + 1
+        }
+        var wcUrls = listOf<String>()
+        var wj = 0
+        while (wj < wcNames.size()) {
+            wcUrls.add(dohQueryUrl(cfg.resolver(), wcNames.get(wj)))
+            wj = wj + 1
+        }
+        var wcWidth = widthForCount8(wcUrls.size())
+        var wcBodies = runDohTextBatch(wcWidth, wcUrls, wcUrls.size())
+        var firstIp = ""
+        var allSame = true
+        var allResolved = true
+        var wk = 0
+        while (wk < wcBodies.size()) {
+            var b = wcBodies.get(wk)
+            if (b.startsWith("ERR:")) {
+                allResolved = false
+            } else {
+                var st = dohStatusOf(b)
+                if (st != 0) {
+                    allResolved = false
+                } else {
+                    var ip = dohFirstIp(b)
+                    if (wk == 0) { firstIp = ip }
+                    if (ip != firstIp) { allSame = false }
+                }
+            }
+            wk = wk + 1
+        }
+        if (allResolved && allSame && firstIp.length() > 0) {
+            wildcardDetected = true
+            wildcardIp = firstIp
+        }
+    }
+    if (cfg.verbose()) {
+        if (wildcardDetected) {
+            log.error("koffuster dns: wildcard DNS detected, IP=" + wildcardIp + " (matching candidates dropped)")
+        } else {
+            log.error("koffuster dns: no wildcard DNS detected")
+        }
+    }
+
+    var totalOps = wcTests
+    var foundCount = 0
+    var errorCount = 0
+
+    var total = words.size()
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        var batchNames = listOf<String>()
+        var batchUrls = listOf<String>()
+        var j = 0
+        while (j < count) {
+            var name = words.get(idx + j) + "." + cfg.domain()
+            batchNames.add(name)
+            batchUrls.add(dohQueryUrl(cfg.resolver(), name))
+            j = j + 1
+        }
+
+        var bodies = runDohTextBatch(width, batchUrls, count)
+        totalOps = totalOps + count
+
+        var m = 0
+        while (m < count) {
+            var body = bodies.get(m)
+            var name = batchNames.get(m)
+            if (body.startsWith("ERR:")) {
+                var reason = body.substring(4)
+                errorCount = errorCount + 1
+                var outcome = "error"
+                if (reason == "refused") { outcome = "resolver_down" }
+                if (reason == "timeout") { outcome = "timeout" }
+                if (cfg.verbose()) { log.error("error: " + name + " -> " + outcome) }
+                // operational error: stderr only, never a stdout result row
+            } else {
+                var st = dohStatusOf(body)
+                if (st == 0) {
+                    var ip = dohFirstIp(body)
+                    if (wildcardDetected && ip == wildcardIp) {
+                        // dropped: matches the wildcard signature
+                    } else {
+                        foundCount = foundCount + 1
+                        var okResult = DnsResult(name, "resolved", ip)
+                        emitDnsResult(okResult, cfg)
+                    }
+                } else if (st == 3) {
+                    // nxdomain - not a hit, not printed by default (matches
+                    // dir's "don't print 404" default-exclusion philosophy);
+                    // shown only in verbose progress.
+                    if (cfg.verbose()) { log.error("nxdomain: " + name) }
+                } else {
+                    if (cfg.verbose()) { log.error("unexpected DoH Status " + st + " for " + name) }
+                }
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+    }
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount, errorCount)
+    return true
+}
+
+Bool emitDnsResult(DnsResult r, Config cfg) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatDnsJsonl(r)
+    } else {
+        line = formatDnsText(r)
+    }
+    println(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") { fileLine = formatDnsText(r) }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
+}

@@ -1,0 +1,176 @@
+// modes_fuzz.kf - the `fuzz` mode driver: replaces every occurrence of the
+// FUZZ marker (in the URL, any -H header value, and/or --body) with each
+// wordlist word.
+
+import kof.process
+
+Bool runFuzzMode(String[] args) {
+    var cfg = parseModeArgs(args, 1, "fuzz")
+
+    if (cfg.help()) {
+        println(fuzzHelpText())
+        return true
+    }
+    if (cfg.valid() == false) {
+        log.error("koffuster fuzz: " + cfg.errorMsg())
+        process.exit(2)
+        return false
+    }
+
+    var fuzzInUrl = cfg.url().contains("FUZZ")
+    var fuzzInBody = cfg.body().contains("FUZZ")
+    var fuzzInHeader = false
+    var hi = 0
+    while (hi < cfg.headers().size()) {
+        if (cfg.headers().get(hi).contains("FUZZ")) { fuzzInHeader = true }
+        hi = hi + 1
+    }
+    if (fuzzInUrl == false && fuzzInBody == false && fuzzInHeader == false) {
+        log.error("koffuster fuzz: FUZZ not found in -u/-H/--body - nothing to substitute (see: koffuster help fuzz)")
+        process.exit(2)
+        return false
+    }
+
+    var method = cfg.method()
+    if (method.length() == 0) { method = "GET" }
+
+    var noColorEnv = envIsSet("NO_COLOR")
+    var colorOn = colorsEnabled(cfg.color(), cfg.noColor(), cfg.quiet(), cfg.format(), noColorEnv)
+    printBanner(cfg.quiet(), cfg.noBanner(), cfg.format())
+    if (cfg.verbose()) {
+        log.error(configEcho(cfg))
+        log.error("koffuster fuzz: method=" + method + " fuzzInUrl=" + fuzzInUrl + " fuzzInHeader=" + fuzzInHeader + " fuzzInBody=" + fuzzInBody)
+    }
+
+    http.timeout(cfg.timeoutSec())
+    var startMs = time.now()
+
+    var words = loadWordlist(cfg.wordlist())
+    if (cfg.quiet() == false) {
+        log.error("koffuster fuzz: " + words.size() + " candidates")
+    }
+
+    // Exact-status fast path: plain GET, FUZZ only in the URL, no custom
+    // headers/cookie/auth to send - the plain status probe works and is
+    // cheaper. Every other combination (headers/body/non-GET involved)
+    // needs the header-bearing path, which only yields an exact status
+    // for 2xx on this build (documented in --help fuzz).
+    var simplePath = method == "GET" && fuzzInHeader == false && fuzzInBody == false && cfg.headers().size() == 0 && cfg.cookie().length() == 0 && cfg.auth().length() == 0
+
+    var width = snapThreads8(cfg.threads())
+    if (simplePath) { width = snapThreads(cfg.threads()) }
+    var totalOps = 0
+    var foundCount = 0
+    var errorCount = 0
+
+    var total = words.size()
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        var batchWords = listOf<String>()
+        var batchDisplayUrls = listOf<String>()
+        var batchUrls = listOf<String>()
+        var batchHdrs = listOf<String>()
+        var batchBodies = listOf<String>()
+        var j = 0
+        while (j < count) {
+            var word = words.get(idx + j)
+            var fuzzedUrl = fuzzSubstituteUrl(cfg.url(), word)
+            batchWords.add(word)
+            batchDisplayUrls.add(fuzzedUrl)
+            batchUrls.add(fuzzedUrl)
+            batchHdrs.add(fuzzBuildHeaders(cfg.userAgent(), cfg.headers(), word))
+            batchBodies.add(fuzzSubstituteRaw(cfg.body(), word))
+            j = j + 1
+        }
+
+        var results = listOf<String>()
+        if (simplePath) {
+            results = runStatusBatch(width, batchUrls, count)
+        } else if (method == "POST") {
+            results = runPostBatch(width, batchUrls, batchBodies, batchHdrs, count)
+        } else if (method == "PUT") {
+            results = runPutBatch(width, batchUrls, batchBodies, batchHdrs, count)
+        } else if (method == "DELETE") {
+            results = runDeleteBatch(width, batchUrls, batchHdrs, count)
+        } else {
+            results = runVhostBatch(width, batchUrls, batchHdrs, count)
+        }
+        totalOps = totalOps + count
+
+        var m = 0
+        while (m < count) {
+            var raw = results.get(m)
+            var url = batchDisplayUrls.get(m)
+            if (raw.startsWith("ERR:")) {
+                errorCount = errorCount + 1
+                if (cfg.verbose()) { log.error("error: " + redactUrl(url) + " -> " + raw.substring(4)) }
+            } else {
+                var status = -1
+                var length = "-"
+                if (simplePath) {
+                    status = raw.toInt()
+                } else {
+                    status = 200
+                    length = raw
+                }
+                // Same filter engine as dir (no baseline: fuzz has no
+                // soft-404 control probe). Default drops 404 unless an
+                // explicit --status whitelist is given.
+                var noBaseline = Baseline(false, 0, -1)
+                var decision = decideResult(status, toIntOr(length, -1), noBaseline, cfg.statusInclude(), cfg.excludeStatus(), cfg.excludeLength())
+                if (decision.startsWith("include")) {
+                    foundCount = foundCount + 1
+                    var result = FuzzResult(url, status, length, batchWords.get(m))
+                    emitFuzzResult(result, cfg, colorOn)
+                }
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+    }
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount, errorCount)
+    return true
+}
+
+// FUZZ in the URL is percent-encoded per candidate (context-aware
+// encoding, per architecture.md section 7).
+String fuzzSubstituteUrl(String url, String word) {
+    return url.replace("FUZZ", percentEncode(word))
+}
+// FUZZ in a header value or the body is substituted raw (documented, not
+// encoded - matches how a header/body value is used verbatim elsewhere).
+String fuzzSubstituteRaw(String s, String word) {
+    return s.replace("FUZZ", word)
+}
+String fuzzBuildHeaders(String userAgent, List<String> headers, String word) {
+    var h = "User-Agent: " + userAgent
+    var i = 0
+    while (i < headers.size()) {
+        h = h + "\r\n" + fuzzSubstituteRaw(headers.get(i), word)
+        i = i + 1
+    }
+    return h
+}
+
+Bool emitFuzzResult(FuzzResult r, Config cfg, Bool colorOn) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatFuzzJsonl(r)
+    } else {
+        line = formatFuzzText(r, colorOn, cfg.url().contains("FUZZ") == false)
+    }
+    println(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") { fileLine = formatFuzzText(r, false, cfg.url().contains("FUZZ") == false) }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
+}

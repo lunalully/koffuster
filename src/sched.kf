@@ -1,0 +1,1255 @@
+// sched.kf - bounded concurrency for Koffuster.
+//
+// Two independent compiler limitations on this KOF build shape everything
+// here (see docs/impl-notes.md for the reproduced failures):
+//   1. Neither `listOf<Handle<T>>()` nor `new Handle<T>[n]` survives the
+//      JVM bytecode verifier, so there is no dynamic-width collection of
+//      in-flight handles. The fallback is a fixed set of unrolled batch
+//      widths (1, 2, 4, 8, 16), matching the cookbook's proven P5 shape.
+//   2. `spawn f(x)` where `x` references any local variable or parameter
+//      (of any type, however deeply nested) corrupts the generated
+//      bytecode. Only zero-argument spawn targets work. So the dynamic
+//      per-request URL cannot be passed as a spawn argument at all - it is
+//      routed instead through a small temp file per batch "slot", written
+//      synchronously (a plain function call, unaffected by the bug) right
+//      before that slot's zero-arg wrapper is spawned.
+//
+// Slot temp files use fixed names under /tmp (no PID/run-id API was found
+// to make them unique - a zero-arg spawn target has no way to read one
+// even if it existed, since top-level functions have no closure over the
+// caller's locals). Documented limitation: two `koffuster dir` scans
+// running at the exact same moment on the same machine could read one
+// another's in-flight slot files. A single run is race-free: every slot's
+// file is written before any slot in that batch is spawned.
+
+String slotStatusPath(Int slot) {
+    return "/tmp/.koffuster_slot_status_" + slot + ".url"
+}
+String slotBodyPath(Int slot) {
+    return "/tmp/.koffuster_slot_body_" + slot + ".url"
+}
+String headersFilePath() {
+    return "/tmp/.koffuster_headers.txt"
+}
+
+// Persist the run's packed header string once at startup so the zero-arg
+// slot functions below can read it (they cannot receive it as a spawn
+// argument - see the file header comment).
+Bool writeHeadersFile(String hdrs) {
+    Path(headersFilePath()).writeText(hdrs)
+    return true
+}
+
+// NOTE: `http.status(url, hdrs)` - the two-argument form - was tried and
+// triggers the SAME internal compiler frame-crash as the multi-header
+// vararg bug (cookbook P1e), reproduced in docs/impl-notes.md. `http.status`
+// only takes a bare URL on this build, so status probes cannot carry
+// custom headers/UA/cookie/auth at all; only the body-length probe (which
+// uses `http.get`, whose two-argument header form does work) can. This is
+// a real, disclosed limitation - see docs/requirements-matrix.md.
+
+// -- status-probe zero-arg spawn targets, one per slot -----------------
+Int statusSlot0() { return http.status(Path(slotStatusPath(0)).readText()) }
+Int statusSlot1() { return http.status(Path(slotStatusPath(1)).readText()) }
+Int statusSlot2() { return http.status(Path(slotStatusPath(2)).readText()) }
+Int statusSlot3() { return http.status(Path(slotStatusPath(3)).readText()) }
+Int statusSlot4() { return http.status(Path(slotStatusPath(4)).readText()) }
+Int statusSlot5() { return http.status(Path(slotStatusPath(5)).readText()) }
+Int statusSlot6() { return http.status(Path(slotStatusPath(6)).readText()) }
+Int statusSlot7() { return http.status(Path(slotStatusPath(7)).readText()) }
+Int statusSlot8() { return http.status(Path(slotStatusPath(8)).readText()) }
+Int statusSlot9() { return http.status(Path(slotStatusPath(9)).readText()) }
+Int statusSlot10() { return http.status(Path(slotStatusPath(10)).readText()) }
+Int statusSlot11() { return http.status(Path(slotStatusPath(11)).readText()) }
+Int statusSlot12() { return http.status(Path(slotStatusPath(12)).readText()) }
+Int statusSlot13() { return http.status(Path(slotStatusPath(13)).readText()) }
+Int statusSlot14() { return http.status(Path(slotStatusPath(14)).readText()) }
+Int statusSlot15() { return http.status(Path(slotStatusPath(15)).readText()) }
+
+// -- body-length-probe zero-arg spawn targets, one per slot -------------
+Int bodySlot0() { return http.get(Path(slotBodyPath(0)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot1() { return http.get(Path(slotBodyPath(1)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot2() { return http.get(Path(slotBodyPath(2)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot3() { return http.get(Path(slotBodyPath(3)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot4() { return http.get(Path(slotBodyPath(4)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot5() { return http.get(Path(slotBodyPath(5)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot6() { return http.get(Path(slotBodyPath(6)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot7() { return http.get(Path(slotBodyPath(7)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot8() { return http.get(Path(slotBodyPath(8)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot9() { return http.get(Path(slotBodyPath(9)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot10() { return http.get(Path(slotBodyPath(10)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot11() { return http.get(Path(slotBodyPath(11)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot12() { return http.get(Path(slotBodyPath(12)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot13() { return http.get(Path(slotBodyPath(13)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot14() { return http.get(Path(slotBodyPath(14)).readText(), Path(headersFilePath()).readText()).length() }
+Int bodySlot15() { return http.get(Path(slotBodyPath(15)).readText(), Path(headersFilePath()).readText()).length() }
+
+// -- headerless body-length probes (1-arg http.get) ----------------------
+// The ONE-argument `http.get(url)` does NOT throw on 4xx (confirmed
+// directly - see docs/impl-notes.md's correction to cookbook P1a), so
+// whenever a run has no custom headers/cookie/auth to send, these slots
+// recover a real body length for every 2xx/3xx/4xx candidate instead of
+// just 2xx (which is all the header-bearing bodySlotN above can manage).
+// 5xx still throws even through this one-argument form (also reconfirmed
+// directly) and correctly falls back to the "-" sentinel either way.
+Int bodyNoHdrSlot0() { return http.get(Path(slotBodyPath(0)).readText()).length() }
+Int bodyNoHdrSlot1() { return http.get(Path(slotBodyPath(1)).readText()).length() }
+Int bodyNoHdrSlot2() { return http.get(Path(slotBodyPath(2)).readText()).length() }
+Int bodyNoHdrSlot3() { return http.get(Path(slotBodyPath(3)).readText()).length() }
+Int bodyNoHdrSlot4() { return http.get(Path(slotBodyPath(4)).readText()).length() }
+Int bodyNoHdrSlot5() { return http.get(Path(slotBodyPath(5)).readText()).length() }
+Int bodyNoHdrSlot6() { return http.get(Path(slotBodyPath(6)).readText()).length() }
+Int bodyNoHdrSlot7() { return http.get(Path(slotBodyPath(7)).readText()).length() }
+Int bodyNoHdrSlot8() { return http.get(Path(slotBodyPath(8)).readText()).length() }
+Int bodyNoHdrSlot9() { return http.get(Path(slotBodyPath(9)).readText()).length() }
+Int bodyNoHdrSlot10() { return http.get(Path(slotBodyPath(10)).readText()).length() }
+Int bodyNoHdrSlot11() { return http.get(Path(slotBodyPath(11)).readText()).length() }
+Int bodyNoHdrSlot12() { return http.get(Path(slotBodyPath(12)).readText()).length() }
+Int bodyNoHdrSlot13() { return http.get(Path(slotBodyPath(13)).readText()).length() }
+Int bodyNoHdrSlot14() { return http.get(Path(slotBodyPath(14)).readText()).length() }
+Int bodyNoHdrSlot15() { return http.get(Path(slotBodyPath(15)).readText()).length() }
+
+// -- per-slot HEADERS override (vhost/fuzz need a different header string
+// per candidate - e.g. vhost's varying Host header) -----------------------
+String slotHeadersPath(Int slot) {
+    return "/tmp/.koffuster_slot_hdrs_" + slot + ".txt"
+}
+// Body-length probe that reads its headers from its OWN per-slot file
+// rather than the single shared run-wide headersFilePath() - used by
+// vhost/fuzz, which write a different header string per candidate before
+// spawning each slot. dir mode still works unchanged: it just writes the
+// same shared header string into every slot's per-slot file each batch.
+Int bodyPerSlotHdr0() { return http.get(Path(slotBodyPath(0)).readText(), Path(slotHeadersPath(0)).readText()).length() }
+Int bodyPerSlotHdr1() { return http.get(Path(slotBodyPath(1)).readText(), Path(slotHeadersPath(1)).readText()).length() }
+Int bodyPerSlotHdr2() { return http.get(Path(slotBodyPath(2)).readText(), Path(slotHeadersPath(2)).readText()).length() }
+Int bodyPerSlotHdr3() { return http.get(Path(slotBodyPath(3)).readText(), Path(slotHeadersPath(3)).readText()).length() }
+Int bodyPerSlotHdr4() { return http.get(Path(slotBodyPath(4)).readText(), Path(slotHeadersPath(4)).readText()).length() }
+Int bodyPerSlotHdr5() { return http.get(Path(slotBodyPath(5)).readText(), Path(slotHeadersPath(5)).readText()).length() }
+Int bodyPerSlotHdr6() { return http.get(Path(slotBodyPath(6)).readText(), Path(slotHeadersPath(6)).readText()).length() }
+Int bodyPerSlotHdr7() { return http.get(Path(slotBodyPath(7)).readText(), Path(slotHeadersPath(7)).readText()).length() }
+
+// -- per-slot POST body (fuzz -X POST/PUT with --body) -------------------
+String slotPostBodyPath(Int slot) {
+    return "/tmp/.koffuster_slot_postbody_" + slot + ".txt"
+}
+Int postSlot0() { return http.post(Path(slotBodyPath(0)).readText(), Path(slotPostBodyPath(0)).readText(), Path(slotHeadersPath(0)).readText()).length() }
+Int postSlot1() { return http.post(Path(slotBodyPath(1)).readText(), Path(slotPostBodyPath(1)).readText(), Path(slotHeadersPath(1)).readText()).length() }
+Int postSlot2() { return http.post(Path(slotBodyPath(2)).readText(), Path(slotPostBodyPath(2)).readText(), Path(slotHeadersPath(2)).readText()).length() }
+Int postSlot3() { return http.post(Path(slotBodyPath(3)).readText(), Path(slotPostBodyPath(3)).readText(), Path(slotHeadersPath(3)).readText()).length() }
+Int postSlot4() { return http.post(Path(slotBodyPath(4)).readText(), Path(slotPostBodyPath(4)).readText(), Path(slotHeadersPath(4)).readText()).length() }
+Int postSlot5() { return http.post(Path(slotBodyPath(5)).readText(), Path(slotPostBodyPath(5)).readText(), Path(slotHeadersPath(5)).readText()).length() }
+Int postSlot6() { return http.post(Path(slotBodyPath(6)).readText(), Path(slotPostBodyPath(6)).readText(), Path(slotHeadersPath(6)).readText()).length() }
+Int postSlot7() { return http.post(Path(slotBodyPath(7)).readText(), Path(slotPostBodyPath(7)).readText(), Path(slotHeadersPath(7)).readText()).length() }
+
+Int putSlot0() { return http.put(Path(slotBodyPath(0)).readText(), Path(slotPostBodyPath(0)).readText(), Path(slotHeadersPath(0)).readText()).length() }
+Int putSlot1() { return http.put(Path(slotBodyPath(1)).readText(), Path(slotPostBodyPath(1)).readText(), Path(slotHeadersPath(1)).readText()).length() }
+Int putSlot2() { return http.put(Path(slotBodyPath(2)).readText(), Path(slotPostBodyPath(2)).readText(), Path(slotHeadersPath(2)).readText()).length() }
+Int putSlot3() { return http.put(Path(slotBodyPath(3)).readText(), Path(slotPostBodyPath(3)).readText(), Path(slotHeadersPath(3)).readText()).length() }
+Int putSlot4() { return http.put(Path(slotBodyPath(4)).readText(), Path(slotPostBodyPath(4)).readText(), Path(slotHeadersPath(4)).readText()).length() }
+Int putSlot5() { return http.put(Path(slotBodyPath(5)).readText(), Path(slotPostBodyPath(5)).readText(), Path(slotHeadersPath(5)).readText()).length() }
+Int putSlot6() { return http.put(Path(slotBodyPath(6)).readText(), Path(slotPostBodyPath(6)).readText(), Path(slotHeadersPath(6)).readText()).length() }
+Int putSlot7() { return http.put(Path(slotBodyPath(7)).readText(), Path(slotPostBodyPath(7)).readText(), Path(slotHeadersPath(7)).readText()).length() }
+
+Int deleteSlot0() { return http.delete(Path(slotBodyPath(0)).readText(), Path(slotHeadersPath(0)).readText()).length() }
+Int deleteSlot1() { return http.delete(Path(slotBodyPath(1)).readText(), Path(slotHeadersPath(1)).readText()).length() }
+Int deleteSlot2() { return http.delete(Path(slotBodyPath(2)).readText(), Path(slotHeadersPath(2)).readText()).length() }
+Int deleteSlot3() { return http.delete(Path(slotBodyPath(3)).readText(), Path(slotHeadersPath(3)).readText()).length() }
+Int deleteSlot4() { return http.delete(Path(slotBodyPath(4)).readText(), Path(slotHeadersPath(4)).readText()).length() }
+Int deleteSlot5() { return http.delete(Path(slotBodyPath(5)).readText(), Path(slotHeadersPath(5)).readText()).length() }
+Int deleteSlot6() { return http.delete(Path(slotBodyPath(6)).readText(), Path(slotHeadersPath(6)).readText()).length() }
+Int deleteSlot7() { return http.delete(Path(slotBodyPath(7)).readText(), Path(slotHeadersPath(7)).readText()).length() }
+
+// -- raw-body-TEXT probes (dns mode needs the actual JSON, not a length) --
+// Uses the shared headersFilePath() (dns writes a constant
+// "Accept: application/dns-json" header once at startup - every DoH query
+// sends the same header, unlike vhost/fuzz's per-candidate headers).
+String bodyTextSlot0() { return http.get(Path(slotBodyPath(0)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot1() { return http.get(Path(slotBodyPath(1)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot2() { return http.get(Path(slotBodyPath(2)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot3() { return http.get(Path(slotBodyPath(3)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot4() { return http.get(Path(slotBodyPath(4)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot5() { return http.get(Path(slotBodyPath(5)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot6() { return http.get(Path(slotBodyPath(6)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot7() { return http.get(Path(slotBodyPath(7)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot8() { return http.get(Path(slotBodyPath(8)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot9() { return http.get(Path(slotBodyPath(9)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot10() { return http.get(Path(slotBodyPath(10)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot11() { return http.get(Path(slotBodyPath(11)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot12() { return http.get(Path(slotBodyPath(12)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot13() { return http.get(Path(slotBodyPath(13)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot14() { return http.get(Path(slotBodyPath(14)).readText(), Path(headersFilePath()).readText()) }
+String bodyTextSlot15() { return http.get(Path(slotBodyPath(15)).readText(), Path(headersFilePath()).readText()) }
+
+// Length sentinel: batch functions already return "ERR:reason" strings for
+// a failed probe; this turns any such value into the single display
+// sentinel "-" (never the misleading "-1", which looks like a real
+// negative length) for both text and JSONL output. A String field (not
+// Int) is what lets JSONL show "-" too - see output.kf's *Result records.
+String lenOrDash(String raw) {
+    if (raw.startsWith("ERR:")) { return "-" }
+    return raw
+}
+
+// Snap a requested thread count DOWN to the nearest supported unrolled
+// width - used for --threads, where rounding down just means "a bit less
+// parallelism than asked for", never a correctness issue.
+Int snapThreads(Int t) {
+    if (t <= 1) { return 1 }
+    if (t <= 3) { return 2 }
+    if (t <= 6) { return 4 }
+    if (t <= 12) { return 8 }
+    return 16
+}
+
+// Smaller cap (1/2/4/8) for the newer per-slot-header/post/put/delete/
+// DoH-query batch families below (vhost/fuzz/dns/s3/gcs) - keeps the
+// amount of generated slot-function/temp-file code proportionate; dir
+// mode is the only one that needs the full 16-wide family.
+Int snapThreads8(Int t) {
+    if (t <= 1) { return 1 }
+    if (t <= 3) { return 2 }
+    if (t <= 6) { return 4 }
+    return 8
+}
+Int widthForCount8(Int n) {
+    if (n <= 1) { return 1 }
+    if (n <= 2) { return 2 }
+    if (n <= 4) { return 4 }
+    return 8
+}
+
+// Rounds a REQUIRED item count UP to the nearest supported unrolled width
+// - used when sizing a batch that must fit `n` real candidates (e.g. the
+// body-length sub-batch): unlike snapThreads, this must never return a
+// width smaller than `n`, or candidates past the width would silently be
+// dropped from the batch's result list. Always <= 16 in practice here,
+// since callers only ever pass a subset of an already-<=16-wide main
+// batch.
+Int widthForCount(Int n) {
+    if (n <= 1) { return 1 }
+    if (n <= 2) { return 2 }
+    if (n <= 4) { return 4 }
+    if (n <= 8) { return 8 }
+    return 16
+}
+
+// Run one batch of up to `width` status probes (width must be a supported
+// snap value; `count` <= width is how many of the batch's slots are real
+// candidates - the rest are left unspawned). `urls` holds the batch's
+// candidate URLs at indices [0, count). Results land in `outStatus`/
+// `outOk`/`outErr`, pre-sized to `width` by the caller (only the first
+// `count` entries are meaningful).
+//
+// This function itself takes ordinary parameters (listOf<...>, Int) - that
+// is fine, the spawn-argument bug only affects the literal arguments of a
+// `spawn` expression, not normal function calls.
+List<String> runStatusBatch(Int width, List<String> urls, Int count) {
+    // Write every slot's URL file synchronously (plain writeText, not
+    // spawned) before spawning any request in this batch - this is what
+    // makes the batch race-free.
+    var i = 0
+    while (i < count) {
+        Path(slotStatusPath(i)).writeText(urls.get(i))
+        i = i + 1
+    }
+    // Clear any unused tail slots left over from a wider previous batch so
+    // they fail fast on a missing file instead of silently re-probing a
+    // stale real target from an earlier batch.
+    while (i < width) {
+        var stale = Path(slotStatusPath(i))
+        if (stale.exists()) { stale.delete() }
+        i = i + 1
+    }
+
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn statusSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn statusSlot0()
+        val r1 = spawn statusSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn statusSlot0()
+        val r1 = spawn statusSlot1()
+        val r2 = spawn statusSlot2()
+        val r3 = spawn statusSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    if (width == 8) {
+        val r0 = spawn statusSlot0()
+        val r1 = spawn statusSlot1()
+        val r2 = spawn statusSlot2()
+        val r3 = spawn statusSlot3()
+        val r4 = spawn statusSlot4()
+        val r5 = spawn statusSlot5()
+        val r6 = spawn statusSlot6()
+        val r7 = spawn statusSlot7()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        var s4 = "ERR:pending"
+        var s5 = "ERR:pending"
+        var s6 = "ERR:pending"
+        var s7 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+        try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+        try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+        try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        if (count > 4) { out.add(s4) }
+        if (count > 5) { out.add(s5) }
+        if (count > 6) { out.add(s6) }
+        if (count > 7) { out.add(s7) }
+        return out
+    }
+    // width == 16
+    val r0 = spawn statusSlot0()
+    val r1 = spawn statusSlot1()
+    val r2 = spawn statusSlot2()
+    val r3 = spawn statusSlot3()
+    val r4 = spawn statusSlot4()
+    val r5 = spawn statusSlot5()
+    val r6 = spawn statusSlot6()
+    val r7 = spawn statusSlot7()
+    val r8 = spawn statusSlot8()
+    val r9 = spawn statusSlot9()
+    val r10 = spawn statusSlot10()
+    val r11 = spawn statusSlot11()
+    val r12 = spawn statusSlot12()
+    val r13 = spawn statusSlot13()
+    val r14 = spawn statusSlot14()
+    val r15 = spawn statusSlot15()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    var s8 = "ERR:pending"
+    var s9 = "ERR:pending"
+    var s10 = "ERR:pending"
+    var s11 = "ERR:pending"
+    var s12 = "ERR:pending"
+    var s13 = "ERR:pending"
+    var s14 = "ERR:pending"
+    var s15 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    try { s8 = "" + await r8 } catch (String e) { s8 = "ERR:" + classifyHttpErr(e) }
+    try { s9 = "" + await r9 } catch (String e) { s9 = "ERR:" + classifyHttpErr(e) }
+    try { s10 = "" + await r10 } catch (String e) { s10 = "ERR:" + classifyHttpErr(e) }
+    try { s11 = "" + await r11 } catch (String e) { s11 = "ERR:" + classifyHttpErr(e) }
+    try { s12 = "" + await r12 } catch (String e) { s12 = "ERR:" + classifyHttpErr(e) }
+    try { s13 = "" + await r13 } catch (String e) { s13 = "ERR:" + classifyHttpErr(e) }
+    try { s14 = "" + await r14 } catch (String e) { s14 = "ERR:" + classifyHttpErr(e) }
+    try { s15 = "" + await r15 } catch (String e) { s15 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    if (count > 8) { out.add(s8) }
+    if (count > 9) { out.add(s9) }
+    if (count > 10) { out.add(s10) }
+    if (count > 11) { out.add(s11) }
+    if (count > 12) { out.add(s12) }
+    if (count > 13) { out.add(s13) }
+    if (count > 14) { out.add(s14) }
+    if (count > 15) { out.add(s15) }
+    return out
+}
+
+// Same shape as runStatusBatch but fetches body length instead of status -
+// used only for the (small) subset of candidates a length filter/baseline
+// actually needs, per architecture.md section 7's "minimize requests" rule.
+List<String> runBodyLenBatch(Int width, List<String> urls, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var stale = Path(slotBodyPath(i))
+        if (stale.exists()) { stale.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn bodySlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn bodySlot0()
+        val r1 = spawn bodySlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn bodySlot0()
+        val r1 = spawn bodySlot1()
+        val r2 = spawn bodySlot2()
+        val r3 = spawn bodySlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    if (width == 8) {
+        val r0 = spawn bodySlot0()
+        val r1 = spawn bodySlot1()
+        val r2 = spawn bodySlot2()
+        val r3 = spawn bodySlot3()
+        val r4 = spawn bodySlot4()
+        val r5 = spawn bodySlot5()
+        val r6 = spawn bodySlot6()
+        val r7 = spawn bodySlot7()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        var s4 = "ERR:pending"
+        var s5 = "ERR:pending"
+        var s6 = "ERR:pending"
+        var s7 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+        try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+        try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+        try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        if (count > 4) { out.add(s4) }
+        if (count > 5) { out.add(s5) }
+        if (count > 6) { out.add(s6) }
+        if (count > 7) { out.add(s7) }
+        return out
+    }
+    // width == 16
+    val r0 = spawn bodySlot0()
+    val r1 = spawn bodySlot1()
+    val r2 = spawn bodySlot2()
+    val r3 = spawn bodySlot3()
+    val r4 = spawn bodySlot4()
+    val r5 = spawn bodySlot5()
+    val r6 = spawn bodySlot6()
+    val r7 = spawn bodySlot7()
+    val r8 = spawn bodySlot8()
+    val r9 = spawn bodySlot9()
+    val r10 = spawn bodySlot10()
+    val r11 = spawn bodySlot11()
+    val r12 = spawn bodySlot12()
+    val r13 = spawn bodySlot13()
+    val r14 = spawn bodySlot14()
+    val r15 = spawn bodySlot15()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    var s8 = "ERR:pending"
+    var s9 = "ERR:pending"
+    var s10 = "ERR:pending"
+    var s11 = "ERR:pending"
+    var s12 = "ERR:pending"
+    var s13 = "ERR:pending"
+    var s14 = "ERR:pending"
+    var s15 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    try { s8 = "" + await r8 } catch (String e) { s8 = "ERR:" + classifyHttpErr(e) }
+    try { s9 = "" + await r9 } catch (String e) { s9 = "ERR:" + classifyHttpErr(e) }
+    try { s10 = "" + await r10 } catch (String e) { s10 = "ERR:" + classifyHttpErr(e) }
+    try { s11 = "" + await r11 } catch (String e) { s11 = "ERR:" + classifyHttpErr(e) }
+    try { s12 = "" + await r12 } catch (String e) { s12 = "ERR:" + classifyHttpErr(e) }
+    try { s13 = "" + await r13 } catch (String e) { s13 = "ERR:" + classifyHttpErr(e) }
+    try { s14 = "" + await r14 } catch (String e) { s14 = "ERR:" + classifyHttpErr(e) }
+    try { s15 = "" + await r15 } catch (String e) { s15 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    if (count > 8) { out.add(s8) }
+    if (count > 9) { out.add(s9) }
+    if (count > 10) { out.add(s10) }
+    if (count > 11) { out.add(s11) }
+    if (count > 12) { out.add(s12) }
+    if (count > 13) { out.add(s13) }
+    if (count > 14) { out.add(s14) }
+    if (count > 15) { out.add(s15) }
+    return out
+}
+
+List<String> runBodyLenBatchNoHdr(Int width, List<String> urls, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var stale = Path(slotBodyPath(i))
+        if (stale.exists()) { stale.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn bodyNoHdrSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn bodyNoHdrSlot0()
+        val r1 = spawn bodyNoHdrSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn bodyNoHdrSlot0()
+        val r1 = spawn bodyNoHdrSlot1()
+        val r2 = spawn bodyNoHdrSlot2()
+        val r3 = spawn bodyNoHdrSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    if (width == 8) {
+        val r0 = spawn bodyNoHdrSlot0()
+        val r1 = spawn bodyNoHdrSlot1()
+        val r2 = spawn bodyNoHdrSlot2()
+        val r3 = spawn bodyNoHdrSlot3()
+        val r4 = spawn bodyNoHdrSlot4()
+        val r5 = spawn bodyNoHdrSlot5()
+        val r6 = spawn bodyNoHdrSlot6()
+        val r7 = spawn bodyNoHdrSlot7()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        var s4 = "ERR:pending"
+        var s5 = "ERR:pending"
+        var s6 = "ERR:pending"
+        var s7 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+        try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+        try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+        try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        if (count > 4) { out.add(s4) }
+        if (count > 5) { out.add(s5) }
+        if (count > 6) { out.add(s6) }
+        if (count > 7) { out.add(s7) }
+        return out
+    }
+    // width == 16
+    val r0 = spawn bodyNoHdrSlot0()
+    val r1 = spawn bodyNoHdrSlot1()
+    val r2 = spawn bodyNoHdrSlot2()
+    val r3 = spawn bodyNoHdrSlot3()
+    val r4 = spawn bodyNoHdrSlot4()
+    val r5 = spawn bodyNoHdrSlot5()
+    val r6 = spawn bodyNoHdrSlot6()
+    val r7 = spawn bodyNoHdrSlot7()
+    val r8 = spawn bodyNoHdrSlot8()
+    val r9 = spawn bodyNoHdrSlot9()
+    val r10 = spawn bodyNoHdrSlot10()
+    val r11 = spawn bodyNoHdrSlot11()
+    val r12 = spawn bodyNoHdrSlot12()
+    val r13 = spawn bodyNoHdrSlot13()
+    val r14 = spawn bodyNoHdrSlot14()
+    val r15 = spawn bodyNoHdrSlot15()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    var s8 = "ERR:pending"
+    var s9 = "ERR:pending"
+    var s10 = "ERR:pending"
+    var s11 = "ERR:pending"
+    var s12 = "ERR:pending"
+    var s13 = "ERR:pending"
+    var s14 = "ERR:pending"
+    var s15 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    try { s8 = "" + await r8 } catch (String e) { s8 = "ERR:" + classifyHttpErr(e) }
+    try { s9 = "" + await r9 } catch (String e) { s9 = "ERR:" + classifyHttpErr(e) }
+    try { s10 = "" + await r10 } catch (String e) { s10 = "ERR:" + classifyHttpErr(e) }
+    try { s11 = "" + await r11 } catch (String e) { s11 = "ERR:" + classifyHttpErr(e) }
+    try { s12 = "" + await r12 } catch (String e) { s12 = "ERR:" + classifyHttpErr(e) }
+    try { s13 = "" + await r13 } catch (String e) { s13 = "ERR:" + classifyHttpErr(e) }
+    try { s14 = "" + await r14 } catch (String e) { s14 = "ERR:" + classifyHttpErr(e) }
+    try { s15 = "" + await r15 } catch (String e) { s15 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    if (count > 8) { out.add(s8) }
+    if (count > 9) { out.add(s9) }
+    if (count > 10) { out.add(s10) }
+    if (count > 11) { out.add(s11) }
+    if (count > 12) { out.add(s12) }
+    if (count > 13) { out.add(s13) }
+    if (count > 14) { out.add(s14) }
+    if (count > 15) { out.add(s15) }
+    return out
+}
+List<String> runVhostBatch(Int width, List<String> urls, List<String> hdrsList, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        Path(slotHeadersPath(i)).writeText(hdrsList.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var staleB = Path(slotBodyPath(i))
+        if (staleB.exists()) { staleB.delete() }
+        var staleH = Path(slotHeadersPath(i))
+        if (staleH.exists()) { staleH.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn bodyPerSlotHdr0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn bodyPerSlotHdr0()
+        val r1 = spawn bodyPerSlotHdr1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn bodyPerSlotHdr0()
+        val r1 = spawn bodyPerSlotHdr1()
+        val r2 = spawn bodyPerSlotHdr2()
+        val r3 = spawn bodyPerSlotHdr3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    // width == 8
+    val r0 = spawn bodyPerSlotHdr0()
+    val r1 = spawn bodyPerSlotHdr1()
+    val r2 = spawn bodyPerSlotHdr2()
+    val r3 = spawn bodyPerSlotHdr3()
+    val r4 = spawn bodyPerSlotHdr4()
+    val r5 = spawn bodyPerSlotHdr5()
+    val r6 = spawn bodyPerSlotHdr6()
+    val r7 = spawn bodyPerSlotHdr7()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    return out
+}
+
+List<String> runPostBatch(Int width, List<String> urls, List<String> bodies, List<String> hdrsList, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        Path(slotPostBodyPath(i)).writeText(bodies.get(i))
+        Path(slotHeadersPath(i)).writeText(hdrsList.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var staleB2 = Path(slotBodyPath(i))
+        if (staleB2.exists()) { staleB2.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn postSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn postSlot0()
+        val r1 = spawn postSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn postSlot0()
+        val r1 = spawn postSlot1()
+        val r2 = spawn postSlot2()
+        val r3 = spawn postSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    // width == 8
+    val r0 = spawn postSlot0()
+    val r1 = spawn postSlot1()
+    val r2 = spawn postSlot2()
+    val r3 = spawn postSlot3()
+    val r4 = spawn postSlot4()
+    val r5 = spawn postSlot5()
+    val r6 = spawn postSlot6()
+    val r7 = spawn postSlot7()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    return out
+}
+
+List<String> runPutBatch(Int width, List<String> urls, List<String> bodies, List<String> hdrsList, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        Path(slotPostBodyPath(i)).writeText(bodies.get(i))
+        Path(slotHeadersPath(i)).writeText(hdrsList.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var staleB3 = Path(slotBodyPath(i))
+        if (staleB3.exists()) { staleB3.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn putSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn putSlot0()
+        val r1 = spawn putSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn putSlot0()
+        val r1 = spawn putSlot1()
+        val r2 = spawn putSlot2()
+        val r3 = spawn putSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    // width == 8
+    val r0 = spawn putSlot0()
+    val r1 = spawn putSlot1()
+    val r2 = spawn putSlot2()
+    val r3 = spawn putSlot3()
+    val r4 = spawn putSlot4()
+    val r5 = spawn putSlot5()
+    val r6 = spawn putSlot6()
+    val r7 = spawn putSlot7()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    return out
+}
+
+List<String> runDeleteBatch(Int width, List<String> urls, List<String> hdrsList, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        Path(slotHeadersPath(i)).writeText(hdrsList.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var staleB4 = Path(slotBodyPath(i))
+        if (staleB4.exists()) { staleB4.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn deleteSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn deleteSlot0()
+        val r1 = spawn deleteSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn deleteSlot0()
+        val r1 = spawn deleteSlot1()
+        val r2 = spawn deleteSlot2()
+        val r3 = spawn deleteSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    // width == 8
+    val r0 = spawn deleteSlot0()
+    val r1 = spawn deleteSlot1()
+    val r2 = spawn deleteSlot2()
+    val r3 = spawn deleteSlot3()
+    val r4 = spawn deleteSlot4()
+    val r5 = spawn deleteSlot5()
+    val r6 = spawn deleteSlot6()
+    val r7 = spawn deleteSlot7()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    try { s0 = "" + await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = "" + await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = "" + await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = "" + await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = "" + await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = "" + await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = "" + await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = "" + await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    return out
+}
+List<String> runDohTextBatch(Int width, List<String> urls, Int count) {
+    var i = 0
+    while (i < count) {
+        Path(slotBodyPath(i)).writeText(urls.get(i))
+        i = i + 1
+    }
+    while (i < width) {
+        var stale = Path(slotBodyPath(i))
+        if (stale.exists()) { stale.delete() }
+        i = i + 1
+    }
+    var out = listOf<String>()
+    if (width == 1) {
+        val r0 = spawn bodyTextSlot0()
+        var s0 = "ERR:pending"
+        try { s0 = await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        return out
+    }
+    if (width == 2) {
+        val r0 = spawn bodyTextSlot0()
+        val r1 = spawn bodyTextSlot1()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        try { s0 = await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        return out
+    }
+    if (width == 4) {
+        val r0 = spawn bodyTextSlot0()
+        val r1 = spawn bodyTextSlot1()
+        val r2 = spawn bodyTextSlot2()
+        val r3 = spawn bodyTextSlot3()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        try { s0 = await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        return out
+    }
+    if (width == 8) {
+        val r0 = spawn bodyTextSlot0()
+        val r1 = spawn bodyTextSlot1()
+        val r2 = spawn bodyTextSlot2()
+        val r3 = spawn bodyTextSlot3()
+        val r4 = spawn bodyTextSlot4()
+        val r5 = spawn bodyTextSlot5()
+        val r6 = spawn bodyTextSlot6()
+        val r7 = spawn bodyTextSlot7()
+        var s0 = "ERR:pending"
+        var s1 = "ERR:pending"
+        var s2 = "ERR:pending"
+        var s3 = "ERR:pending"
+        var s4 = "ERR:pending"
+        var s5 = "ERR:pending"
+        var s6 = "ERR:pending"
+        var s7 = "ERR:pending"
+        try { s0 = await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+        try { s1 = await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+        try { s2 = await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+        try { s3 = await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+        try { s4 = await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+        try { s5 = await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+        try { s6 = await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+        try { s7 = await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+        if (count > 0) { out.add(s0) }
+        if (count > 1) { out.add(s1) }
+        if (count > 2) { out.add(s2) }
+        if (count > 3) { out.add(s3) }
+        if (count > 4) { out.add(s4) }
+        if (count > 5) { out.add(s5) }
+        if (count > 6) { out.add(s6) }
+        if (count > 7) { out.add(s7) }
+        return out
+    }
+    // width == 16
+    val r0 = spawn bodyTextSlot0()
+    val r1 = spawn bodyTextSlot1()
+    val r2 = spawn bodyTextSlot2()
+    val r3 = spawn bodyTextSlot3()
+    val r4 = spawn bodyTextSlot4()
+    val r5 = spawn bodyTextSlot5()
+    val r6 = spawn bodyTextSlot6()
+    val r7 = spawn bodyTextSlot7()
+    val r8 = spawn bodyTextSlot8()
+    val r9 = spawn bodyTextSlot9()
+    val r10 = spawn bodyTextSlot10()
+    val r11 = spawn bodyTextSlot11()
+    val r12 = spawn bodyTextSlot12()
+    val r13 = spawn bodyTextSlot13()
+    val r14 = spawn bodyTextSlot14()
+    val r15 = spawn bodyTextSlot15()
+    var s0 = "ERR:pending"
+    var s1 = "ERR:pending"
+    var s2 = "ERR:pending"
+    var s3 = "ERR:pending"
+    var s4 = "ERR:pending"
+    var s5 = "ERR:pending"
+    var s6 = "ERR:pending"
+    var s7 = "ERR:pending"
+    var s8 = "ERR:pending"
+    var s9 = "ERR:pending"
+    var s10 = "ERR:pending"
+    var s11 = "ERR:pending"
+    var s12 = "ERR:pending"
+    var s13 = "ERR:pending"
+    var s14 = "ERR:pending"
+    var s15 = "ERR:pending"
+    try { s0 = await r0 } catch (String e) { s0 = "ERR:" + classifyHttpErr(e) }
+    try { s1 = await r1 } catch (String e) { s1 = "ERR:" + classifyHttpErr(e) }
+    try { s2 = await r2 } catch (String e) { s2 = "ERR:" + classifyHttpErr(e) }
+    try { s3 = await r3 } catch (String e) { s3 = "ERR:" + classifyHttpErr(e) }
+    try { s4 = await r4 } catch (String e) { s4 = "ERR:" + classifyHttpErr(e) }
+    try { s5 = await r5 } catch (String e) { s5 = "ERR:" + classifyHttpErr(e) }
+    try { s6 = await r6 } catch (String e) { s6 = "ERR:" + classifyHttpErr(e) }
+    try { s7 = await r7 } catch (String e) { s7 = "ERR:" + classifyHttpErr(e) }
+    try { s8 = await r8 } catch (String e) { s8 = "ERR:" + classifyHttpErr(e) }
+    try { s9 = await r9 } catch (String e) { s9 = "ERR:" + classifyHttpErr(e) }
+    try { s10 = await r10 } catch (String e) { s10 = "ERR:" + classifyHttpErr(e) }
+    try { s11 = await r11 } catch (String e) { s11 = "ERR:" + classifyHttpErr(e) }
+    try { s12 = await r12 } catch (String e) { s12 = "ERR:" + classifyHttpErr(e) }
+    try { s13 = await r13 } catch (String e) { s13 = "ERR:" + classifyHttpErr(e) }
+    try { s14 = await r14 } catch (String e) { s14 = "ERR:" + classifyHttpErr(e) }
+    try { s15 = await r15 } catch (String e) { s15 = "ERR:" + classifyHttpErr(e) }
+    if (count > 0) { out.add(s0) }
+    if (count > 1) { out.add(s1) }
+    if (count > 2) { out.add(s2) }
+    if (count > 3) { out.add(s3) }
+    if (count > 4) { out.add(s4) }
+    if (count > 5) { out.add(s5) }
+    if (count > 6) { out.add(s6) }
+    if (count > 7) { out.add(s7) }
+    if (count > 8) { out.add(s8) }
+    if (count > 9) { out.add(s9) }
+    if (count > 10) { out.add(s10) }
+    if (count > 11) { out.add(s11) }
+    if (count > 12) { out.add(s12) }
+    if (count > 13) { out.add(s13) }
+    if (count > 14) { out.add(s14) }
+    if (count > 15) { out.add(s15) }
+    return out
+}
+
+
+// Progressive backoff for a retry attempt number (0-based): 200ms, 400ms,
+// 800ms, capped.
+Int backoffMs(Int attempt) {
+    if (attempt <= 0) { return 200 }
+    if (attempt == 1) { return 400 }
+    return 800
+}
+
+// A single retrying status probe outside the batch machinery - used for
+// control probes and for retrying an individual candidate that failed with
+// a retryable (refused/timeout) error. Retries only ever repeat an
+// idempotent GET/status check, never a mutating verb (dir mode never sends
+// one).
+String statusWithRetries(String url, Int maxRetries) {
+    Path(slotStatusPath(0)).writeText(url)
+    val r0 = spawn statusSlot0()
+    var result = "ERR:pending"
+    try { result = "" + await r0 } catch (String e) { result = "ERR:" + classifyHttpErr(e) }
+    var attempt = 0
+    while (result.startsWith("ERR:") && isRetryable(result) && attempt < maxRetries) {
+        time.sleep(backoffMs(attempt))
+        Path(slotStatusPath(0)).writeText(url)
+        val r = spawn statusSlot0()
+        try { result = "" + await r } catch (String e) { result = "ERR:" + classifyHttpErr(e) }
+        attempt = attempt + 1
+    }
+    return result
+}
+
+// One-shot body-length fetch (no retries - used for control/baseline
+// probes, which are already a handful of extra requests and don't need
+// retry amplification).
+String bodyLenOnce(String url) {
+    Path(slotBodyPath(0)).writeText(url)
+    val r0 = spawn bodySlot0()
+    var result = "ERR:pending"
+    try { result = "" + await r0 } catch (String e) { result = "ERR:" + classifyHttpErr(e) }
+    return result
+}
+
+Bool isRetryable(String result) {
+    if (result.contains("refused")) { return true }
+    if (result.contains("timeout")) { return true }
+    return false
+}
