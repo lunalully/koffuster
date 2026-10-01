@@ -431,5 +431,19 @@ koffuster/
 ├── docs/                # documentação técnica (arquitetura, relatórios)
 ├── labs/                # laboratórios locais de teste (HTTP/UDP/DoH)
 ├── banner.txt           # arte ASCII do banner (KOFFUSTER no font Sub-Zero)
+├── LICENSE              # texto completo da GPLv3
 └── README.md
 ```
+
+---
+
+## Licença
+
+O Koffuster é software livre, licenciado sob a **GNU GPLv3** — o texto
+completo está em [LICENSE](LICENSE). Copyright (C) 2026 lunalully.
+
+Na prática: qualquer pessoa pode usar, estudar, modificar e redistribuir o
+Koffuster; mas quem distribuir uma versão modificada **precisa manter a
+mesma licença e os avisos de autoria** — ninguém pode fechar o código nem
+remover os créditos. O runtime KOF também é GPLv3; o Koffuster é um programa
+independente e adota a mesma licença.
