@@ -18,6 +18,10 @@ modos mais comuns de reconhecimento:
 Todo achado é reportado como **achado de enumeração**, nunca como
 vulnerabilidade — Koffuster não explora nada, apenas sonda e reporta.
 
+> **Primeira vez aqui?** Vá direto para
+> [Instalação (passo a passo)](#instalação-passo-a-passo) — um guia de zero,
+> sem assumir nada além de um terminal Linux.
+
 ---
 
 ## O que mudou para o KOF 0.5.0-beta (v0.2.0)
@@ -53,26 +57,133 @@ E a CLI foi **simplificada**:
 
 ## Requisitos e dependências
 
-- Um runtime **KOF 0.5.0-beta** instalado: o comando `kof` no `PATH`, ou
-  `$KOF_HOME/bin/kof` (a distribuição traz a própria JVM embutida — nenhuma
-  instalação de Java é necessária).
+- Um runtime **KOF 0.5.0-beta** instalado — o download oficial fica em
+  **[https://koflang.github.io/](https://koflang.github.io/)**. O launcher
+  encontra o runtime como `kof` no `PATH` ou via `$KOF_HOME/bin/kof` (veja
+  [Como o launcher encontra o runtime](#como-o-launcher-encontra-o-runtime)).
+  A distribuição é autocontida: traz a própria JVM embutida, então **nenhuma
+  instalação de Java é necessária**.
 - **Koffuster não é um executável independente.** Ele é código-fonte KOF
   (`src/*.kf`) que o runtime `kof` compila e executa a cada chamada, através
   do launcher `bin/koffuster`. Não existe binário nativo separado.
+- O ambiente-alvo é **Linux com `bash`**; macOS e Windows (via WSL) ainda
+  não são testados.
 
-O launcher exporta automaticamente a cada execução:
+---
 
+## Instalação (passo a passo)
+
+Nunca usou o Koffuster? São três passos, uns cinco minutos. Você só precisa
+de um terminal Linux com `bash` — o Java, o compilador e o runtime vêm
+embutidos no KOF.
+
+### Passo 1 — Instale o runtime KOF
+
+O Koffuster é feito de código KOF (`src/*.kf`): quem compila e executa é o
+runtime **KOF 0.5.0-beta**. Baixe a distribuição oficial em
+**[https://koflang.github.io/](https://koflang.github.io/)** (página de
+download do site, ou as
+[releases no GitHub](https://github.com/KofLang/Kof4j/releases)) e siga o
+instalador. A instalação é autocontida — nada de Java, Maven ou dependências
+extras. Confirme o resultado:
+
+```bash
+kof version
+# kof 0.5.0-beta
 ```
-JDK_JAVA_OPTIONS="-Djdk.httpclient.allowRestrictedHeaders=host"
+
+Se o comando não responder, o `kof` ainda não está no `PATH` — veja
+[Como o launcher encontra o runtime](#como-o-launcher-encontra-o-runtime).
+
+### Passo 2 — Baixe o Koffuster
+
+O projeto fica em
+**[https://github.com/lunalully/koffuster](https://github.com/lunalully/koffuster)**.
+Com `git` instalado:
+
+```bash
+git clone https://github.com/lunalully/koffuster.git
+cd koffuster
 ```
 
-Essa flag é obrigatória para o modo `vhost` (o runtime precisa sobrescrever
-o header `Host`, que a JVM normalmente proíbe o cliente de alterar).
+Sem `git`? Na página do repositório, clique em **Code → Download ZIP**,
+extraia a pasta e entre nela pelo terminal. Valide a cópia (ainda sem
+instalar nada):
 
-## Instalação e o launcher `bin/koffuster`
+```bash
+./bin/koffuster --version
+# koffuster 0.2.0
+```
 
-Não há passo de "instalação": basta ter o runtime KOF (veja acima) e chamar
-`bin/koffuster`. O launcher:
+### Passo 3 — Chame `koffuster` de qualquer pasta (recomendado)
+
+Até aqui, `./bin/koffuster` só funciona de dentro da pasta do projeto. Para
+digitar apenas `koffuster` em qualquer terminal — como nos exemplos deste
+README — crie um atalho (symlink) em `~/.local/bin`, a pasta padrão de
+programas do usuário. **Rode os comandos de dentro da pasta do clone:**
+
+```bash
+mkdir -p ~/.local/bin
+ln -sf "$PWD/bin/koffuster" ~/.local/bin/koffuster
+```
+
+O `$PWD` vira o caminho completo do launcher; se o projeto ficou em outro
+lugar, troque por
+`ln -sf /caminho/para/koffuster/bin/koffuster ~/.local/bin/koffuster`.
+Confirme:
+
+```bash
+command -v koffuster   # deve mostrar ~/.local/bin/koffuster
+koffuster --version    # koffuster 0.2.0
+```
+
+Se o `command -v` não mostrar nada, seu `~/.local/bin` ainda não está no
+`PATH`. Adicione uma vez, no arquivo do seu shell:
+
+```bash
+# bash:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+
+# zsh:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
+```
+
+Detalhes que valem saber:
+
+- O atalho aponta para a pasta do clone: se você mover ou apagar o projeto,
+  recrie o symlink. Para remover: `rm ~/.local/bin/koffuster`.
+- Sem atalho também funciona: como o launcher resolve o próprio caminho,
+  `~/koffuster/bin/koffuster --version` roda de qualquer pasta — digitar
+  `koffuster` é só conveniência.
+
+### Primeiro uso
+
+Estes dois comandos não tocam em nenhum alvo e mostram tudo o que existe:
+
+```bash
+koffuster --help          # modos e sintaxe
+koffuster help dir        # ajuda detalhada de um modo
+```
+
+Todo modo ativo pede uma wordlist. Para um primeiro teste de verdade, sem
+sair da sua máquina (requer `python3`), o projeto inclui um servidor de teste
+local:
+
+```bash
+python3 labs/http_lab.py >/dev/null 2>&1 &   # alvo de teste em 127.0.0.1:18080
+printf 'admin\nlogin\n200-teste\n' > palavras.txt
+koffuster dir http://127.0.0.1:18080 palavras.txt
+kill %1                                       # encerra o servidor de teste
+```
+
+> Use o Koffuster somente em alvos para os quais você tem autorização.
+
+### Como o launcher encontra o runtime
+
+Ordem de escolha: `$KOFFUSTER_KOF_JAR` (jar staged, para testes) →
+`$KOF_HOME/bin/kof` → `kof` no `PATH`.
+
+O launcher (`bin/koffuster`):
 
 1. Resolve o próprio caminho real (funciona via symlink e de qualquer
    diretório de trabalho) e localiza `src/` e `banner.txt`.
@@ -89,8 +200,14 @@ Não há passo de "instalação": basta ter o runtime KOF (veja acima) e chamar
 `-w/--wordlist` e `-o/--output` são resolvidos contra o diretório onde você
 chamou `koffuster`, não contra a raiz do projeto.
 
-Ordem de escolha do runtime: `$KOFFUSTER_KOF_JAR` (jar staged, para testes)
-→ `$KOF_HOME/bin/kof` → `kof` no `PATH`.
+O launcher exporta automaticamente a cada execução:
+
+```
+JDK_JAVA_OPTIONS="-Djdk.httpclient.allowRestrictedHeaders=host"
+```
+
+Essa flag é obrigatória para o modo `vhost` (o runtime precisa sobrescrever
+o header `Host`, que a JVM normalmente proíbe o cliente de alterar).
 
 ---
 
