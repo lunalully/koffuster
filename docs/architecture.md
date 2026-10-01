@@ -113,7 +113,8 @@ Status/length lists: comma-separated; length supports ranges (`0,100-200,404`).
 - `s3`: `--endpoint <tmpl>` (default `http://%s.s3.amazonaws.com/`), wordlist =
   bucket names.
 - `gcs`: `--endpoint <tmpl>` (default `https://storage.googleapis.com/%s/`).
-- `tftp`: `--server <host>`, `--port <n>` (default 69). See §Blockers.
+- `tftp`: `--server <host>`, `--port <n>` (default 69; host aceita `:porta`).
+  Implementado em 01/10/2026 via interop JVM (`java.net`).
 
 ---
 
@@ -311,15 +312,15 @@ Probe probeStatus(String url, String hdrs) {
 
 ## 10. Blockers (handle honestly)
 
-1. **tftp / raw UDP** — demonstrated blocker on 0.2.6 (`getBytes()`/`byte[]`
-   codegen crash; `DatagramPacket` needs a `byte[]`). Plan: the modes agent
-   runs ONE time-boxed `extern`/C-FFI spike (libc `socket/sendto/recvfrom`).
-   If it works → implement real TFTP read (RRQ, data/ACK, distinguish
-   timeout vs file-absent; never write). If it fails → `tftp` mode is a
-   registered mode with full `--help` that, on run, prints a clear honest
-   message to stderr ("tftp/UDP is not supported on this KOF build: <reason>")
-   and exits non-zero. This is NOT an empty stub-for-appearance: it documents a
-   real, demonstrated limitation. Record the outcome in the matrix.
+1. **tftp / raw UDP — RESOLVED (2026-10-01).** The 0.2.6-era blocker was
+   re-examined on 0.5.0-beta: the "JavaFX error" was only the JVM launcher
+   message masking the real `ClassFormatError`/`NoSuchMethodError` from
+   `String.getBytes()` codegen, and that path is not needed. KOF 0.5.0-beta
+   accepts `import java.net.*` on the JVM target, `new Byte[n]` works, and
+   `charAt()` -> `Byte[]` builds the RRQ. `tftp` is now a real read-only
+   check (RRQ octet, DATA/ERROR parsing, ACK block 1, timeout), no
+   `extern`/C-FFI required. Scope limits in the README ("Limitações") and
+   `--help tftp`.
 2. **No response headers / redirect targets / Content-Length** — documented;
    use body length; report redirects by status only.
 3. **URL-encode & base64** — pure-KOF implementations in `util_str.kf`
@@ -343,8 +344,8 @@ the launcher, from a directory OTHER than the project (prove out-of-tree run).
 - fuzz: FUZZ in url (encoded), header, body; missing-FUZZ error; multi-FUZZ.
 - s3/gcs: mock endpoints returning 200/403/404 → public/exists_denied/absent;
   403 not treated as absent.
-- tftp: local UDP/tftp fixture if FFI works, else assert the honest-failure
-  message + non-zero exit.
+- tftp: local fixture (`labs/tftp_lab.py`) - exists/denied/not-found/timeout
+  shapes; DATA triggers an observed ACK block 1.
 - cross-cutting: JSONL validity (parse each line), stdout/stderr separation
   (results only on stdout), append+flush durability (kill mid-run, check file),
   timeouts/refused handled without crash, rate limit honored, run from another

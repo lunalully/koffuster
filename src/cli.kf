@@ -32,7 +32,8 @@ record Config(
     Bool verbose,
     Bool help,
     Bool valid,
-    String errorMsg
+    String errorMsg,
+    Int port
 )
 
 Config defaultConfig() {
@@ -41,7 +42,7 @@ Config defaultConfig() {
         listOf<String>(), "", "", "koffuster/0.2",
         "", "", "https://dns.google/resolve", "", "GET", "",
         "", "", "",
-        false, false, false, false, true, ""
+        false, false, false, false, true, "", 69
     )
 }
 
@@ -235,7 +236,7 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
         else if (argIs(name, "-X", "--method")) { c = withMethod(c, value.toUpperCase()) }
         else if (name == "--endpoint") { c = withEndpoint(c, value) }
         else if (name == "--server") { c = withUrl(c, value) }
-        else if (name == "--port") { c = c }
+        else if (name == "--port") { c = withPort(c, toIntOr(value, 69)) }
         else {
             return invalidConfig("opção desconhecida: " + raw)
         }
@@ -255,7 +256,12 @@ Config parseModeArgs(String[] args, Int startIdx, String mode) {
             return invalidConfig("falta o domínio (uso: " + usageLine(mode) + "; veja: koffuster help dns)")
         }
     }
-    if (mode == "dir" || mode == "dns" || mode == "vhost" || mode == "fuzz" || mode == "s3" || mode == "gcs") {
+    if (mode == "tftp") {
+        if (c.url().length() == 0) {
+            return invalidConfig("falta o servidor (uso: " + usageLine(mode) + "; veja: koffuster help tftp)")
+        }
+    }
+    if (mode == "dir" || mode == "dns" || mode == "vhost" || mode == "fuzz" || mode == "s3" || mode == "gcs" || mode == "tftp") {
         if (c.wordlist().length() == 0) {
             return invalidConfig("falta a wordlist (uso: " + usageLine(mode) + "; veja: koffuster help " + mode + ")")
         }
@@ -269,35 +275,36 @@ Config parseDirArgs(String[] args, Int startIdx) {
 
 Config invalidConfig(String msg) {
     var c = defaultConfig()
-    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), false, false, msg)
+    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), false, false, msg, c.port())
 }
 
 // -- builders "with campo X" (records são imutáveis - cada um reconstrói) --
 
-Config withUrl(Config c, String v) { return Config(v, c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withWordlist(Config c, String v) { return Config(c.url(), v, c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExtensions(Config c, String v) { return Config(c.url(), c.wordlist(), v, c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withThreads(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), v, c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withTimeout(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), v, c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withRetries(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), v, c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withOutput(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), v, c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withFormat(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), v, c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withCookie(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), v, c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withAuth(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), v, c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withUserAgent(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), v, c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withProxy(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), v, c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withDomain(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), v, c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withResolver(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), v, c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withBody(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), v, c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withMethod(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), v, c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withEndpoint(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), v, c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withStatusInclude(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), v, c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExcludeStatus(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), v, c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withExcludeLength(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), v, c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withQuiet(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), v, c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withColor(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), v, c.verbose(), c.help(), c.valid(), c.errorMsg()) }
-Config withVerbose(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), v, c.help(), c.valid(), c.errorMsg()) }
-Config withHelp(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), v, c.valid(), c.errorMsg()) }
+Config withUrl(Config c, String v) { return Config(v, c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withWordlist(Config c, String v) { return Config(c.url(), v, c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withExtensions(Config c, String v) { return Config(c.url(), c.wordlist(), v, c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withThreads(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), v, c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withTimeout(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), v, c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withRetries(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), v, c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withOutput(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), v, c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withFormat(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), v, c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withCookie(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), v, c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withAuth(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), v, c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withUserAgent(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), v, c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withProxy(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), v, c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withDomain(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), v, c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withResolver(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), v, c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withBody(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), v, c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withMethod(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), v, c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withEndpoint(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), v, c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withStatusInclude(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), v, c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withExcludeStatus(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), v, c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withExcludeLength(Config c, String v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), v, c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withQuiet(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), v, c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withColor(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), v, c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withVerbose(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), v, c.help(), c.valid(), c.errorMsg(), c.port()) }
+Config withHelp(Config c, Bool v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), v, c.valid(), c.errorMsg(), c.port()) }
+Config withPort(Config c, Int v) { return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), c.headers(), c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), v) }
 
 Config withHeaderAdded(Config c, String v) {
     var newHeaders = listOf<String>()
@@ -307,7 +314,7 @@ Config withHeaderAdded(Config c, String v) {
         i = i + 1
     }
     newHeaders.add(v)
-    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), newHeaders, c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg())
+    return Config(c.url(), c.wordlist(), c.extensions(), c.threads(), c.timeoutSec(), c.retries(), c.output(), c.format(), newHeaders, c.cookie(), c.auth(), c.userAgent(), c.proxy(), c.domain(), c.resolver(), c.body(), c.method(), c.endpoint(), c.statusInclude(), c.excludeStatus(), c.excludeLength(), c.quiet(), c.color(), c.verbose(), c.help(), c.valid(), c.errorMsg(), c.port())
 }
 
 // -- redação de segredos --------------------------------------------------
@@ -364,7 +371,7 @@ String authOptionsHelp() {
 String exitCodesHelp() {
     var h = "\nCódigos de saída: 0 ok (inclusive uma execução limpa sem achados);\n"
     h = h + "1 execução com zero resultados E pelo menos um erro operacional;\n"
-    h = h + "2 erro de uso; 3 só no tftp - modo não suportado.\n"
+    h = h + "2 erro de uso.\n"
     return h
 }
 
@@ -500,16 +507,23 @@ String tftpHelpText() {
     var h = "koffuster tftp - checagem de existência de arquivo TFTP (RRQ, somente leitura)\n\n"
     h = h + "Uso: koffuster tftp <servidor[:porta]> <wordlist|-> [opções]\n"
     h = h + "     (forma clássica: koffuster tftp -u <host[:porta]> -w <wordlist|->)\n\n"
-    h = h + "Opções:\n"
-    h = h + "  -u, --url <host[:porta]>    servidor TFTP (aceito por simetria)\n"
-    h = h + "      --server <host>         alias de --url\n"
-    h = h + "      --port <n>              porta TFTP (padrão 69; aceita, não usada)\n"
-    h = h + "  -w, --wordlist <arquivo|->   wordlist (ou - para stdin)\n\n"
-    h = h + "STATUS: não suportado nesta build do KOF. TFTP precisa montar pacotes\n"
-    h = h + "binários (byte[]) - e String.getBytes() ainda derruba o runtime\n"
-    h = h + "(NoClassDefFoundError/JavaFX) mesmo no 0.5.0-beta, e o FFI/extern\n"
-    h = h + "documentado para o 0.5.0 não resolveu o parser nas versões atuais.\n"
-    h = h + "Este modo sempre imprime uma linha honesta no stderr e sai com código 3.\n"
-    h = h + "Nunca finge um resultado.\n"
+    h = h + "Obrigatório:\n"
+    h = h + "  <servidor[:porta]>           host TFTP; a porta pode vir embutida\n"
+    h = h + "  <wordlist|->                 nomes de arquivo; -w, --wordlist também\n"
+    h = h + "                               aceita (ou - para stdin)\n\n"
+    h = h + "Específicas:\n"
+    h = h + "      --port <n>              porta TFTP quando não vem no servidor\n"
+    h = h + "                              (padrão 69)\n\n"
+    h = h + commonOptionsHelp()
+    h = h + "\nComo funciona: um RRQ (modo octet) por candidato; DATA = existe; ERROR 2\n"
+    h = h + "(access violation) = existe com acesso negado; ERROR 1 = não existe\n"
+    h = h + "(omitido por padrão; -v mostra). Sem resposta = timeout (omitido por\n"
+    h = h + "padrão; -v mostra e conta como erro). Ao receber DATA, o ACK do bloco 1\n"
+    h = h + "é enviado para o servidor parar de retransmitir.\n"
+    h = h + exitCodesHelp()
+    h = h + "\nExemplos:\n"
+    h = h + "  koffuster tftp 10.0.0.9 arquivos.txt\n"
+    h = h + "  koffuster tftp 10.0.0.9:6969 arquivos.txt -v\n"
+    h = h + "  koffuster tftp 10.0.0.9 arquivos.txt --port 6969 -f jsonl -o found.jsonl\n"
     return h
 }

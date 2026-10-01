@@ -15,7 +15,7 @@ modos mais comuns de reconhecimento:
 | `vhost` | enumeração de virtual hosts (novo nesta versão!) |
 | `fuzz` | substituição de payloads com `FUZZ` em URL/cabeçalho/corpo |
 | `s3` / `gcs` | verificação de existência/permissão de buckets S3 e GCS |
-| `tftp` | registrado por completude, mas se recusa a rodar de forma honesta (veja [Limitações](#limitações-conhecidas)) |
+| `tftp` | checagem de existência de arquivos via TFTP (RRQ, somente leitura) |
 
 Todo achado é reportado como **achado de enumeração**, nunca como
 vulnerabilidade — Koffuster não explora nada, apenas sonda e reporta.
@@ -227,7 +227,7 @@ koffuster <modo> --help
 Na forma curta, os posicionais preenchem os campos vazios na ordem do modo:
 `dir`/`vhost` → `<url> <wordlist>`; `dns` → `<domínio> <wordlist>`;
 `fuzz` → `<url-com-FUZZ> <wordlist>`; `s3`/`gcs` → `<wordlist>`;
-`tftp` → `<servidor> <wordlist>`. Em `dir`/`vhost`/`fuzz`, uma url sem
+`tftp` → `<servidor[:porta]> <wordlist>`. Em `dir`/`vhost`/`fuzz`, uma url sem
 esquema vira `https://` (para `http://`, digite o esquema). Os atalhos
 `-u/--url`, `-d/--domain` e `-w/--wordlist` continuam aceitos e podem ser
 misturados com posicionais.
@@ -255,8 +255,8 @@ koffuster s3 buckets.txt
 # gcs — mesma ideia, endpoint do Google Cloud Storage
 koffuster gcs buckets.txt --endpoint "https://storage.googleapis.com/%s/"
 
-# tftp — registrado, mas sempre recusa rodar (veja Limitações)
-koffuster tftp 10.0.0.9 arquivos.txt --port 69
+# tftp — checagem de existência de arquivos (RRQ, somente leitura)
+koffuster tftp 10.0.0.9:69 arquivos.txt -v
 ```
 
 Todo exemplo acima é aceito literalmente pelo parser — não são pseudo-código.
@@ -268,7 +268,6 @@ Todo exemplo acima é aceito literalmente pelo parser — não são pseudo-códi
 | `0` | Execução ok, inclusive uma execução limpa que simplesmente não achou nada |
 | `1` | A execução terminou com zero resultados **e** pelo menos um erro operacional (toda requisição recusada/expirou, alvo inalcançável) |
 | `2` | Erro de uso: opção desconhecida ou opção obrigatória faltando |
-| `3` | Só no `tftp`: modo não suportado nesta build |
 
 ---
 
@@ -314,8 +313,8 @@ comando; as flags abaixo continuam equivalentes.
   PUT/DELETE), `--body <dados>`, `-s/--status`, `-b/--exclude-status`,
   `--exclude-length`.
 - **s3/gcs**: `--endpoint <modelo>` (`%s` vira o nome do bucket).
-- **tftp**: `--server`/`-u`, `--port` — aceitos só por simetria; o modo
-  sempre se recusa a rodar.
+- **tftp**: `--server`/`-u` (servidor, `host[:porta]`) e `--port` (quando a
+  porta não vem no host). RRQ modo `octet` por candidato; nada é escrito.
 
 Filtros do dir/fuzz: `-s/--status` (se dado) desliga a exclusão padrão de
 404; `-b/--exclude-status` aplica depois; `--exclude-length` por último.
@@ -384,13 +383,16 @@ prévia no topo deste README (`assets/banner.svg`) é gerada a partir do
 
 ## Limitações conhecidas
 
-- **`tftp`/UDP não é suportado.** TFTP exige montar pacotes binários
-  (`byte[]`), e `String.getBytes()` ainda derruba o runtime mesmo no
-  0.5.0-beta (erro de runtime JavaFX). O FFI/`extern` documentado para o
-  0.5.0 ainda não resolve no parser das builds atuais. Sem nenhuma das duas
-  rotas, nenhum pacote TFTP pode ser montado. O modo está registrado (com
-  `--help` completo), mas sempre imprime uma linha honesta no stderr e sai
-  com código 3 — nunca finge um resultado.
+- **`tftp` é enumeração read-only, não transferência.** O modo envia um
+  RRQ (modo `octet`) por candidato e classifica a resposta: DATA (existe;
+  o ACK do bloco 1 é enviado para o servidor parar de retransmitir),
+  ERROR 2 (existe, acesso negado), ERROR 1 (não existe; omitido por
+  padrão) e timeout (omitido por padrão; conta como erro). O tamanho
+  exibido é o do primeiro bloco de dados (tipicamente ≤ 512 bytes), não o
+  tamanho total do arquivo — nada além do primeiro bloco é baixado.
+  O probe usa interop JVM (`java.net`), então o modo roda no target JVM
+  (o padrão do launcher); IPv6 não é suportado (o último `:` define a
+  porta).
 - **Status exato com headers custom só para 5xx.** `http.status()` não
   aceita headers nesta build, e `http.get(url, headers)` retorna apenas o
   corpo (sem o código) para 2xx-4xx; só 5xx aparece na exceção (`HTTP 5xx`).
@@ -431,9 +433,9 @@ koffuster/
 │   ├── modes_vhost.kf   # vhost
 │   ├── modes_fuzz.kf    # fuzz
 │   ├── modes_store.kf   # s3/gcs
-│   └── modes_tftp.kf    # tftp (recusa honesta)
+│   └── modes_tftp.kf    # tftp (RRQ read-only, interop JVM)
 ├── docs/                # documentação técnica (arquitetura, relatórios)
-├── labs/                # laboratórios locais de teste (HTTP/UDP/DoH)
+├── labs/                # laboratórios locais de teste (HTTP/UDP/TFTP/DoH)
 ├── assets/              # imagens do README (banner.svg em moldura de terminal)
 ├── banner.txt           # arte ASCII do banner (KOFFUSTER no font Sub-Zero)
 ├── LICENSE              # texto completo da GPLv3

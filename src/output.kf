@@ -10,6 +10,7 @@ record DnsResult(String name, String outcome, String ip)
 record VhostResult(String host, Int status, String length, String note)
 record FuzzResult(String url, Int status, String length, String word)
 record StoreResult(String bucket, String url, Int status, String state)
+record TftpResult(String file, String outcome, String info)
 
 // ANSI por classe de status. Cores OFF por padrão (sem detecção confiável
 // de TTY); só com --color explícito. NO_COLOR, --no-color, --quiet e jsonl
@@ -83,6 +84,20 @@ String formatStoreText(StoreResult r) {
     return line
 }
 String formatStoreJsonl(StoreResult r) { return json.encode(r) }
+
+String formatTftpText(TftpResult r, Bool colorEnabled) {
+    var line = padRight(r.outcome(), 12) + r.file()
+    if (r.info().length() > 0) { line = line + "  (" + r.info() + ")" }
+    if (colorEnabled) {
+        var c = ""
+        if (r.outcome() == "existe") { c = "\u001b[32m" }
+        else if (r.outcome() == "negado") { c = "\u001b[33m" }
+        else if (r.outcome() == "erro") { c = "\u001b[31m" }
+        if (c.length() > 0) { return c + line + colorReset() }
+    }
+    return line
+}
+String formatTftpJsonl(TftpResult r) { return json.encode(r) }
 
 // Append + flush por escrita imediata: cada appendText é uma escrita
 // completa e durável, então resultados sobrevivem a Ctrl+C.

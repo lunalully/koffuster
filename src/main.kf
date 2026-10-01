@@ -75,7 +75,7 @@ Bool printTopHelp() {
     println("  fuzz   substituição de FUZZ em URL/cabeçalho/corpo")
     println("  s3     bucket S3 (somente leitura)")
     println("  gcs    bucket GCS (somente leitura)")
-    println("  tftp   não suportado nesta build (veja 'koffuster help tftp')")
+    println("  tftp   checagem de arquivos via TFTP (RRQ, somente leitura)")
     println("")
     println("Resultados vão para stdout; banner, progresso e erros para stderr.")
     println("Exemplos:")

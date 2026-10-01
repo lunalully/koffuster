@@ -1,13 +1,21 @@
-// modes_tftp.kf - modo tftp: registrado com --help completo, mas se recusa
-// a rodar honestamente.
+// modes_tftp.kf - modo tftp: checagem de existência de arquivo via TFTP
+// (RRQ, modo octet, somente leitura - nunca WRQ, nunca transfere o arquivo
+// inteiro).
 //
-// TFTP exige montar pacotes binários (byte[]) - e mesmo no KOF 0.5.0-beta,
-// String.getBytes() ainda derruba o runtime (erro de JavaFX), e o FFI/
-// extern documentado para o 0.5.0 não resolve no parser das builds
-// atuais. Sem nenhuma das rotas, nenhum pacote TFTP pode ser montado.
-// O modo imprime uma linha honesta no stderr e sai com código 3.
+// O stdlib do KOF 0.5.0-beta não expõe UDP, mas o target JVM (o único que o
+// launcher usa) aceita qualquer classe Java por import qualificado: o probe
+// usa java.net.DatagramSocket/DatagramPacket/InetAddress e monta o RRQ em
+// Byte[] - opcode, nome e "octet" ficam em 0x00-0x7F, seguro para Byte
+// assinado (valores >127 voltam negativos na leitura).
+//
+// Por candidato: RRQ -> DATA (existe; responde ACK do bloco 1), ERROR 2
+// (existe, acesso negado), ERROR 1 (não existe; omitido por padrão),
+// timeout/sem resposta (omitido por padrão; -v mostra e conta como erro).
 
 import kof.process
+import java.net.DatagramSocket
+import java.net.DatagramPacket
+import java.net.InetAddress
 
 Bool runTftpMode(String[] args) {
     var cfg = parseModeArgs(args, 1, "tftp")
@@ -22,7 +30,230 @@ Bool runTftpMode(String[] args) {
         return false
     }
 
-    log.error("koffuster tftp: TFTP/UDP não é suportado nas builds atuais do KOF (0.5.0-beta incluso): String.getBytes()/byte[] ainda derruba o runtime e o FFI/extern documentado para o 0.5.0 não resolveu no parser - não há como montar um pacote TFTP. Não implementado.")
-    process.exit(3)
-    return false
+    var noColorEnv = envIsSet("NO_COLOR")
+    printBanner(cfg.quiet(), false, cfg.format())
+    var colorOn = colorsEnabled(cfg.color(), false, cfg.quiet(), cfg.format(), noColorEnv)
+    if (cfg.verbose()) { log.error(configEcho(cfg)) }
+
+    var target = parseTftpTarget(cfg.url(), cfg.port())
+    var host = target.get(0)
+    var port = target.get(1).toInt()
+    var timeoutMs = cfg.timeoutSec() * 1000
+    if (timeoutMs < 1) { timeoutMs = 1000 }
+
+    var startMs = time.now()
+    var files = loadWordlist(cfg.wordlist())
+    if (cfg.quiet() == false) {
+        log.error("koffuster tftp: " + files.size() + " candidatos, servidor " + host + ":" + port)
+    }
+
+    var width = snapThreads(cfg.threads())
+    var totalOps = 0
+    var foundCount = 0
+    var errorCount = 0
+    var held = listOf<String>()
+    var showProgress = (cfg.quiet() == false && files.size() >= 50)
+    var lastBucket = -1
+
+    var total = files.size()
+    if (showProgress) {
+        lastBucket = tickProgress(0, total, 0, lastBucket)
+    }
+    var idx = 0
+    while (idx < total) {
+        var count = width
+        if (idx + count > total) { count = total - idx }
+
+        var batchFiles = listOf<String>()
+        var j = 0
+        while (j < count) {
+            batchFiles.add(files.get(idx + j))
+            j = j + 1
+        }
+
+        var rawResults = runTftpBatch(width, host, port, batchFiles, timeoutMs, count)
+        totalOps = totalOps + count
+
+        var m = 0
+        while (m < count) {
+            var raw = rawResults.get(m)
+            var file = batchFiles.get(m)
+            var outcome = raw
+            var info = ""
+            if (raw.startsWith("existe:")) {
+                outcome = "existe"
+                info = "primeiro bloco: " + raw.substring(7) + " bytes"
+            } else if (raw == "negado") {
+                outcome = "negado"
+            } else if (raw == "nao_existe") {
+                outcome = "nao_existe"
+            } else if (raw == "timeout") {
+                outcome = "timeout"
+                errorCount = errorCount + 1
+            } else if (raw.startsWith("erro:")) {
+                outcome = "erro"
+                info = raw.substring(5)
+                errorCount = errorCount + 1
+            }
+
+            if (outcome == "existe" || outcome == "negado") {
+                foundCount = foundCount + 1
+                emitTftpResult(TftpResult(file, outcome, info), cfg, colorOn, held)
+            } else if (cfg.verbose()) {
+                emitTftpResult(TftpResult(file, outcome, info), cfg, colorOn, held)
+            }
+            m = m + 1
+        }
+
+        idx = idx + count
+        if (showProgress) {
+            lastBucket = tickProgress(idx, total, foundCount, lastBucket)
+        }
+    }
+
+    if (showProgress) {
+        lastBucket = finishProgress(total, foundCount, lastBucket)
+    }
+    flushHeldResults(held)
+
+    var durationMs = time.now() - startMs
+    printSummary(cfg.quiet(), totalOps, foundCount, errorCount, durationMs)
+    exitOnTotalFailure(foundCount, errorCount)
+    return true
+}
+
+// "host" ou "host:porta"; a porta embutida vence o --port. IPv6 não é
+// suportado (o último ":" define a porta).
+List<String> parseTftpTarget(String raw, Int fallbackPort) {
+    var host = raw
+    var port = fallbackPort
+    var colon = raw.lastIndexOf(":")
+    if (colon > 0) {
+        var maybe = raw.substring(colon + 1)
+        if (isAllDigits(maybe)) {
+            host = raw.substring(0, colon)
+            port = maybe.toInt()
+        }
+    }
+    var out = listOf<String>()
+    out.add(host)
+    out.add("" + port)
+    return out
+}
+
+Bool isAllDigits(String s) {
+    if (s.length() == 0) { return false }
+    var i = 0
+    while (i < s.length()) {
+        var ch = s.charAt(i)
+        if (ch < 48 || ch > 57) { return false }
+        i = i + 1
+    }
+    return true
+}
+
+// Batches na concorrência pedida; cada probe abre o próprio socket UDP.
+List<String> runTftpBatch(Int width, String host, Int port, List<String> files, Int timeoutMs, Int count) {
+    var out = listOf<String>()
+    var i = 0
+    while (i < count) {
+        var batch = listOf<Handle<String>>()
+        var end = i + width
+        if (end > count) { end = count }
+        var j = i
+        while (j < end) {
+            batch.add(spawn tftpProbeOne(host, port, files.get(j), timeoutMs))
+            j = j + 1
+        }
+        for (var h in batch) {
+            out.add(await h)
+        }
+        i = end
+    }
+    return out
+}
+
+// RRQ: opcode 1 + nome + 0x00 + "octet" + 0x00.
+Byte[] tftpRrq(String file) {
+    var nameLen = file.length()
+    var b = new Byte[2 + nameLen + 1 + 5 + 1]
+    b[0] = 0
+    b[1] = 1
+    var i = 0
+    while (i < nameLen) {
+        b[2 + i] = file.charAt(i)
+        i = i + 1
+    }
+    b[2 + nameLen] = 0
+    b[3 + nameLen] = 111
+    b[4 + nameLen] = 99
+    b[5 + nameLen] = 116
+    b[6 + nameLen] = 101
+    b[7 + nameLen] = 116
+    b[8 + nameLen] = 0
+    return b
+}
+
+// Um candidato -> "existe:<bytes do primeiro bloco>" | "negado" |
+// "nao_existe" | "timeout" | "erro:<motivo>".
+String tftpProbeOne(String host, Int port, String file, Int timeoutMs) {
+    var res = ""
+    var ds = DatagramSocket()
+    try {
+        ds.setSoTimeout(timeoutMs)
+        var addr = InetAddress.getByName(host)
+        var out = tftpRrq(file)
+        var pkt = DatagramPacket(out, out.length, addr, port)
+        ds.send(pkt)
+        var inBuf = new Byte[1500]
+        var inPkt = DatagramPacket(inBuf, 1500)
+        ds.receive(inPkt)
+        if (inBuf[0] == 0 && inBuf[1] == 3) {
+            res = "existe:" + (inPkt.getLength() - 4)
+            tftpSendAck(ds, inPkt)
+        } else if (inBuf[0] == 0 && inBuf[1] == 5) {
+            var code = inBuf[3]
+            if (code == 1) { res = "nao_existe" }
+            else if (code == 2) { res = "negado" }
+            else { res = "erro:ERROR " + code }
+        } else {
+            res = "erro:opcode inesperado"
+        }
+    } catch (Exception e) {
+        var msg = "" + e
+        if (msg.contains("SocketTimeoutException")) { res = "timeout" }
+        else if (msg.contains("PortUnreachable")) { res = "erro:porta inalcancavel" }
+        else if (msg.contains("UnknownHostException")) { res = "erro:dns" }
+        else { res = "erro:rede" }
+    }
+    ds.close()
+    return res
+}
+
+// ACK do bloco 1, da origem da resposta (o servidor para de retransmitir).
+Bool tftpSendAck(DatagramSocket ds, DatagramPacket inPkt) {
+    var ack = new Byte[4]
+    ack[0] = 0
+    ack[1] = 4
+    ack[2] = 0
+    ack[3] = 1
+    var reply = DatagramPacket(ack, 4, inPkt.getAddress(), inPkt.getPort())
+    ds.send(reply)
+    return true
+}
+
+Bool emitTftpResult(TftpResult r, Config cfg, Bool colorOn, List<String> held) {
+    var line = ""
+    if (cfg.format() == "jsonl") {
+        line = formatTftpJsonl(r)
+    } else {
+        line = formatTftpText(r, colorOn)
+    }
+    held.add(line)
+    if (cfg.output().length() > 0) {
+        var fileLine = line
+        if (cfg.format() != "jsonl") { fileLine = formatTftpText(r, false) }
+        appendResultLine(cfg.output(), fileLine)
+    }
+    return true
 }
