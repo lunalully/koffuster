@@ -102,7 +102,7 @@ Bool runStoreMode(String[] args, String modeName, String defaultEndpoint) {
     }
 
     if (showProgress) {
-        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+        lastBucket = finishProgress(total, foundCount, lastBucket)
     }
     flushHeldResults(held)
 

@@ -195,6 +195,16 @@ Int tickProgress(Int done, Int total, Int found, Int lastBucket) {
     return bucket
 }
 
+// Fecha a barra em 100% e segura os resultados por um instante. O 100% sai
+// via log.error (stderr) e no launcher atravessa um processo sed; os
+// resultados saem direto no stdout. Sem esse settle, o stdout alcança o
+// terminal antes e a linha de 100% aparece no meio da lista.
+Int finishProgress(Int total, Int found, Int lastBucket) {
+    var bucket = tickProgress(total, total, found, lastBucket)
+    time.sleep(200)
+    return bucket
+}
+
 Bool exitOnTotalFailure(Int results, Int errors) {
     if (results <= 0 && errors > 0) {
         process.exit(1)

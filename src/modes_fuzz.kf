@@ -158,7 +158,7 @@ Bool runFuzzMode(String[] args) {
     }
 
     if (showProgress) {
-        lastBucket = tickProgress(total, total, foundCount, lastBucket)
+        lastBucket = finishProgress(total, foundCount, lastBucket)
     }
     flushHeldResults(held)
 

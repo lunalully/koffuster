@@ -207,9 +207,11 @@ Filtros do dir/fuzz: `-s/--status` (se dado) desliga a exclusão padrão de
 
 - **Resultados sempre vão para stdout — e só no final.** Durante a varredura
   o terminal mostra banner/progresso (em stderr); a lista completa sai de
-  uma vez quando o scan chega a 100%. Banner, progresso e resumo final vão
-  para stderr — `koffuster dir ... 2>/dev/null` numa pipeline só entrega as
-  linhas de resultado.
+  uma vez quando o scan chega a 100%, com um pequeno settle de 200 ms entre
+  a barra e a lista (sem ele, o stdout alcança o terminal antes do stderr e
+  o 100% aparece no meio dos resultados). Banner, progresso e resumo final
+  vão para stderr — `koffuster dir ... 2>/dev/null` numa pipeline só entrega
+  as linhas de resultado.
 - **Texto** (padrão): colunas alinhadas, ex. `200   1234    /admin`.
 - **JSONL** (`-f jsonl`): uma linha JSON por resultado no stdout, sem
   banner/cores/progresso misturados — cada linha é `json.loads`-ável
