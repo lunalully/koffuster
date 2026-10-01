@@ -2,6 +2,8 @@
 
 > Enumeração ativa de terminal, escrita em KOF — um binário, seis modos, zero exploração.
 
+![Banner ASCII do Koffuster em uma janela de terminal](assets/banner.svg)
+
 Koffuster é uma ferramenta de enumeração ativa para terminal, escrita em KOF
 (Kof4j), voltada ao runtime **0.5.0-beta**. Ela reúne em um único binário os
 modos mais comuns de reconhecimento:
@@ -351,7 +353,9 @@ apontando para esse arquivo, então a arte aparece rodando de qualquer
 diretório — não é preciso colar arte no código. Se o arquivo estiver vazio
 ou não existir, Koffuster imprime apenas a palavra `Koffuster`. Para trocar
 a arte, substitua `banner.txt` preservando os bytes como fornecidos (a
-variável `KOFFUSTER_BANNER` também pode apontar para outro arquivo).
+variável `KOFFUSTER_BANNER` também pode apontar para outro arquivo). A
+prévia no topo deste README (`assets/banner.svg`) é gerada a partir do
+`banner.txt`.
 
 ---
 
@@ -430,6 +434,7 @@ koffuster/
 │   └── modes_tftp.kf    # tftp (recusa honesta)
 ├── docs/                # documentação técnica (arquitetura, relatórios)
 ├── labs/                # laboratórios locais de teste (HTTP/UDP/DoH)
+├── assets/              # imagens do README (banner.svg em moldura de terminal)
 ├── banner.txt           # arte ASCII do banner (KOFFUSTER no font Sub-Zero)
 ├── LICENSE              # texto completo da GPLv3
 └── README.md
